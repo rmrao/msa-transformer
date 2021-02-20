@@ -1,0 +1,263 @@
+import torch
+import torch.nn as nn
+import pytorch_lightning as pl
+
+from evo.metrics import compute_precisions
+
+from modules import (
+    AxialTransformerLayer,
+    ContactPredictionHead,
+    LearnedPositionalEmbedding,
+    RobertaLMHead,
+    RowSelfAttention,
+    ColumnSelfAttention,
+)
+
+
+class Average(pl.metrics.Metric):
+    def __init__(self, dist_sync_on_step=False):
+        super().__init__(dist_sync_on_step=dist_sync_on_step)
+
+        self.add_state(
+            "total", default=torch.tensor(0, dtype=torch.float), dist_reduce_fx="sum"
+        )
+        self.add_state(
+            "samples", default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum"
+        )
+
+    def update(self, values: torch.Tensor):  # type: ignore
+        self.total += values.sum().float()
+        self.samples += values.numel()  # type: ignore
+
+    def compute(self):
+        return self.total / self.samples
+
+
+class MSATransformer(pl.LightningModule):
+    def __init__(
+        self,
+        vocab_size: int,
+        bos_idx: int,
+        eos_idx: int,
+        pad_idx: int,
+        mask_idx: int,
+        prepend_bos: bool = True,
+        append_eos: bool = False,
+        embed_dim: int = 768,
+        num_attention_heads: int = 12,
+        num_layers: int = 12,
+        embed_positions_msa: bool = True,
+        dropout: float = 0.1,
+        attention_dropout: float = 0.1,
+        activation_dropout: float = 0.1,
+        max_tokens_per_msa: int = 2 ** 14,
+        max_seqlen: int = 1024,
+    ):
+        super().__init__()
+        self.alphabet_size = vocab_size
+        self.pad_idx = pad_idx
+        self.mask_idx = mask_idx
+        self.bos_idx = bos_idx
+        self.eos_idx = eos_idx
+        self.prepend_bos = prepend_bos
+        self.append_eos = append_eos
+        self.embed_dim = embed_dim
+        self.num_attention_heads = num_attention_heads
+        self.num_layers = num_layers
+        self.embed_positions_msa = embed_positions_msa
+        self.dropout = dropout
+        self.attention_dropout = attention_dropout
+        self.activation_dropout = activation_dropout
+        self.max_tokens_per_msa = max_tokens_per_msa
+
+        self.embed_tokens = nn.Embedding(
+            self.alphabet_size, embed_dim, padding_idx=self.pad_idx
+        )
+
+        if embed_positions_msa:
+            self.msa_position_embedding = nn.Parameter(
+                0.01 * torch.randn(1, 1024, 1, 1),
+                requires_grad=True,
+            )
+        else:
+            self.register_parameter("msa_position_embedding", None)
+
+        self.dropout_module = nn.Dropout(dropout)
+        self.layers = nn.ModuleList(
+            [
+                AxialTransformerLayer(
+                    embedding_dim=embed_dim,
+                    ffn_embedding_dim=4 * embed_dim,
+                    num_attention_heads=num_attention_heads,
+                    dropout=dropout,
+                    attention_dropout=attention_dropout,
+                    activation_dropout=activation_dropout,
+                    max_tokens_per_msa=max_tokens_per_msa,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+        self.contact_head = ContactPredictionHead(
+            num_layers * num_attention_heads,
+            self.prepend_bos,
+            self.append_eos,
+            eos_idx=self.eos_idx,
+        )
+        self.embed_positions = LearnedPositionalEmbedding(
+            max_seqlen,
+            embed_dim,
+            self.pad_idx,
+        )
+        self.emb_layer_norm_before = nn.LayerNorm(embed_dim)
+        self.emb_layer_norm_after = nn.LayerNorm(embed_dim)
+        self.lm_head = RobertaLMHead(
+            embed_dim=embed_dim,
+            output_dim=self.alphabet_size,
+            weight=self.embed_tokens.weight,
+        )
+
+    def forward(
+        self, tokens, repr_layers=[], need_head_weights=False, return_contacts=False
+    ):
+        if return_contacts:
+            need_head_weights = True
+
+        assert tokens.ndim == 3
+        batch_size, num_alignments, seqlen = tokens.size()
+        padding_mask = tokens.eq(self.pad_idx)  # B, R, C
+        if not padding_mask.any():
+            padding_mask = None
+
+        x = self.embed_tokens(tokens)
+        x += self.embed_positions(
+            tokens.view(batch_size * num_alignments, seqlen)
+        ).view(x.size())
+        if self.msa_position_embedding is not None:
+            if x.size(1) > 1024:
+                raise RuntimeError(
+                    "Using model with MSA position embedding trained on maximum MSA "
+                    f"depth of 1024, but received {x.size(1)} alignments."
+                )
+            x += self.msa_position_embedding[:, :num_alignments]
+
+        x = self.emb_layer_norm_before(x)
+
+        x = self.dropout_module(x)
+
+        if padding_mask is not None:
+            x = x * (1 - padding_mask.unsqueeze(-1).type_as(x))
+
+        repr_layers = set(repr_layers)
+        hidden_representations = {}
+        if 0 in repr_layers:
+            hidden_representations[0] = x
+
+        if need_head_weights:
+            row_attn_weights = []
+            col_attn_weights = []
+
+        # B x R x C x D -> R x C x B x D
+        x = x.permute(1, 2, 0, 3)
+
+        for layer_idx, layer in enumerate(self.layers):
+            x = layer(
+                x,
+                self_attn_padding_mask=padding_mask,
+                need_head_weights=need_head_weights,
+            )
+            if need_head_weights:
+                x, col_attn, row_attn = x
+                # H x C x B x R x R -> B x H x C x R x R
+                col_attn_weights.append(col_attn.permute(2, 0, 1, 3, 4))
+                # H x B x C x C -> B x H x C x C
+                row_attn_weights.append(row_attn.permute(1, 0, 2, 3))
+            if (layer_idx + 1) in repr_layers:
+                hidden_representations[layer_idx + 1] = x.permute(2, 0, 1, 3)
+
+        x = self.emb_layer_norm_after(x)
+        x = x.permute(2, 0, 1, 3)  # R x C x B x D -> B x R x C x D
+
+        # last hidden representation should have layer norm applied
+        if (layer_idx + 1) in repr_layers:
+            hidden_representations[layer_idx + 1] = x
+        x = self.lm_head(x)
+
+        result = {"logits": x, "representations": hidden_representations}
+        if need_head_weights:
+            # col_attentions: B x L x H x C x R x R
+            col_attentions = torch.stack(col_attn_weights, 1)
+            # row_attentions: B x L x H x C x C
+            row_attentions = torch.stack(row_attn_weights, 1)
+            result["col_attentions"] = col_attentions
+            result["row_attentions"] = row_attentions
+            if return_contacts:
+                contacts = self.contact_head(tokens, row_attentions)
+                result["contacts"] = contacts
+
+        return result
+
+    def predict_contacts(self, tokens):
+        return self(tokens, return_contacts=True)["contacts"]
+
+    def on_validation_epoch_start(self):
+        from dataset import TRRosettaContactDataset
+        with open("/data/proteins/trrosetta/unsupervised/train.txt") as f:
+            pdbs = f.read().splitlines()
+        data = TRRosettaContactDataset("/data/proteins/trrosetta", split_files=pdbs)
+
+
+
+    def validation_step(self, batch, batch_idx):
+        predictions = self.predict_contacts(batch["src_tokens"])
+        metrics = compute_precisions(
+            predictions,
+            batch["tgt"],
+            batch["tgt_lengths"],
+            minsep=24,
+        )
+
+        for key, value in metrics.items():
+            self.log(f"Long Range {key}", value, prob_bar=key == "P@L")
+
+    def max_tokens_per_msa_(self, value: int) -> None:
+        """The MSA Transformer automatically batches attention computations when
+        gradients are disabled to allow you to pass in larger MSAs at test time than
+        you can fit in GPU memory. By default this occurs when more than 2^14 tokens
+        are passed in the input MSA. You can set this value to infinity to disable
+        this behavior.
+        """
+        self.max_tokens_per_msa = value
+        for module in self.modules():
+            if isinstance(module, (RowSelfAttention, ColumnSelfAttention)):
+                module.max_tokens_per_msa = value
+
+    @classmethod
+    def from_esm(cls):
+        import esm
+        from evo.tokenization import Vocab
+
+        esm_model, alphabet = esm.pretrained.esm_msa1_t12_100M_UR50S()
+        args = esm_model.args
+        vocab = Vocab.from_esm_alphabet(alphabet)
+        model = cls(
+            vocab_size=len(vocab),  # can be off b/c of null token
+            bos_idx=vocab.bos_idx,
+            eos_idx=vocab.eos_idx,
+            pad_idx=vocab.pad_idx,
+            mask_idx=vocab.mask_idx,
+            prepend_bos=vocab.prepend_bos,
+            append_eos=vocab.append_eos,
+            embed_dim=args.embed_dim,
+            num_attention_heads=args.attention_heads,
+            num_layers=args.layers,
+            embed_positions_msa=args.embed_positions_msa,
+            dropout=args.dropout,
+            attention_dropout=args.attention_dropout,
+            activation_dropout=args.activation_dropout,
+            max_tokens_per_msa=getattr(args, "max_tokens_per_msa", args.max_tokens),
+        )
+
+        model.load_state_dict(esm_model.state_dict())
+
+        return model
