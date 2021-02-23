@@ -1,8 +1,12 @@
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
+import numpy as np
+import sklearn.linear_model
+from tqdm import tqdm
 
 from evo.metrics import compute_precisions
+from evo.tensor import symmetrize, apc
 
 from modules import (
     AxialTransformerLayer,
@@ -201,12 +205,54 @@ class MSATransformer(pl.LightningModule):
         return self(tokens, return_contacts=True)["contacts"]
 
     def on_validation_epoch_start(self):
+        self.train_contact_regression()
+
+    def train_contact_regression(self, verbose=False):
         from dataset import TRRosettaContactDataset
+
         with open("/data/proteins/trrosetta/unsupervised/train.txt") as f:
             pdbs = f.read().splitlines()
         data = TRRosettaContactDataset("/data/proteins/trrosetta", split_files=pdbs)
 
+        X = []
+        y = []
+        with torch.no_grad():
+            iterable = data if not verbose else tqdm(data)
+            for tokens, contacts in iterable:
+                tokens = tokens.unsqueeze(0)
+                attentions = self(tokens.to(self.device), need_head_weights=True)[
+                    "row_attentions"
+                ]
+                attentions = attentions[..., 1:, 1:]
+                seqlen = attentions.size(-1)
+                attentions = symmetrize(attentions)
+                attentions = apc(attentions)
+                attentions = attentions.view(-1, seqlen, seqlen).cpu().numpy()
+                sep = np.add.outer(-np.arange(seqlen), np.arange(seqlen))
+                mask = sep >= 6
+                attentions = attentions[:, mask]
+                contacts = contacts[mask]
+                X.append(attentions.T)
+                y.append(contacts)
 
+        X = np.concatenate(X, 0)
+        y = np.concatenate(y, 0)
+
+        clf = sklearn.linear_model.LogisticRegression(
+            penalty="l1",
+            C=0.15,
+            solver="liblinear",
+            verbose=verbose,
+            random_state=0,
+        )
+        clf.fit(X, y)
+
+        self.contact_head.regression.load_state_dict(
+            {
+                "weight": torch.from_numpy(clf.coef_),
+                "bias": torch.from_numpy(clf.intercept_),
+            }
+        )
 
     def validation_step(self, batch, batch_idx):
         predictions = self.predict_contacts(batch["src_tokens"])
