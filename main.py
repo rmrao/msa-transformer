@@ -181,7 +181,7 @@ def train(cfg: Config) -> None:
         else True
     )
 
-    if isinstance(logger, pl.LightningLoggerBase):
+    if isinstance(logger, pl.loggers.LightningLoggerBase):
         logger.log_hyperparams(cfg.train)
         logger.log_hyperparams(cfg.model)
 
