@@ -17,6 +17,8 @@ from modules import (
     ColumnSelfAttention,
 )
 
+import lr_schedulers
+
 
 class Average(pl.metrics.Metric):
     def __init__(self, dist_sync_on_step=False):
@@ -56,6 +58,12 @@ class MSATransformer(pl.LightningModule):
         activation_dropout: float = 0.1,
         max_tokens_per_msa: int = 2 ** 14,
         max_seqlen: int = 1024,
+        optimizer: str = "adam",
+        learning_rate: float = 1e-3,
+        weight_decay: float = 1e-4,
+        lr_scheduler: str = "constant",
+        warmup_steps: int = 0,
+        max_steps: int = 10000,
     ):
         super().__init__()
         self.alphabet_size = vocab_size
@@ -73,6 +81,14 @@ class MSATransformer(pl.LightningModule):
         self.attention_dropout = attention_dropout
         self.activation_dropout = activation_dropout
         self.max_tokens_per_msa = max_tokens_per_msa
+        self.optimizer = optimizer
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.lr_scheduler = lr_scheduler
+        self.warmup_steps = warmup_steps
+        self.max_steps = max_steps
+
+        self.save_hyperparameters()
 
         self.embed_tokens = nn.Embedding(
             self.alphabet_size, embed_dim, padding_idx=self.pad_idx
@@ -84,7 +100,7 @@ class MSATransformer(pl.LightningModule):
                 requires_grad=True,
             )
         else:
-            self.register_parameter("msa_position_embedding", None)
+            self.register_parameter("msa_position_embedding", None)  # type: ignore
 
         self.dropout_module = nn.Dropout(dropout)
         self.layers = nn.ModuleList(
@@ -264,7 +280,7 @@ class MSATransformer(pl.LightningModule):
         )
 
         for key, value in metrics.items():
-            self.log(f"Long Range {key}", value, prob_bar=key == "P@L")
+            self.log(f"valid/Long Range {key}", value, prob_bar=key == "P@L")
 
     def max_tokens_per_msa_(self, value: int) -> None:
         """The MSA Transformer automatically batches attention computations when
@@ -277,6 +293,39 @@ class MSATransformer(pl.LightningModule):
         for module in self.modules():
             if isinstance(module, (RowSelfAttention, ColumnSelfAttention)):
                 module.max_tokens_per_msa = value
+
+    def configure_optimizers(self):
+        no_decay = ["norm", "LayerNorm"]
+
+        decay_params = []
+        no_decay_params = []
+
+        for name, param in self.named_parameters():
+            if any(nd in name for nd in no_decay):
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
+
+        optimizer_grouped_parameters = [
+            {"params": decay_params, "weight_decay": self.weight_decay},
+            {"params": no_decay_params, "weight_decay": 0.0},
+        ]
+
+        if self.optimizer == "adam":
+            optimizer_type = torch.optim.AdamW
+        elif self.optimizer == "lamb":
+            try:
+                from apex.optimizers import FusedLAMB
+            except ImportError:
+                raise ImportError("Apex must be installed to use FusedLAMB optimizer.")
+            optimizer_type = FusedLAMB
+        optimizer = optimizer_type(optimizer_grouped_parameters, lr=self.learning_rate)
+        scheduler = lr_schedulers.get(self.lr_scheduler)(
+            optimizer, self.warmup_steps, self.max_steps
+        )
+
+        scheduler_dict = {"scheduler": scheduler, "interval": "step"}
+        return [optimizer], [scheduler_dict]
 
     @classmethod
     def from_esm(cls):
