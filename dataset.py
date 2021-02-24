@@ -4,21 +4,22 @@ import torch
 from evo.ffindex import MSAFFindex
 from evo.tokenization import Vocab
 from evo.typed import PathLike
-from evo.dataset import CollatableDataset, NPZDataset, A3MDataset
+from evo.dataset import CollatableVocabDataset, NPZDataset, A3MDataset
 from evo.tensor import collate_tensors
 import esm
 
 
-class MSADataset(CollatableDataset):
+class MSADataset(CollatableVocabDataset):
     def __init__(self, ffindex_path: PathLike):
-        super().__init__()
+        vocab = Vocab.from_esm_alphabet(
+            esm.data.Alphabet.from_architecture("MSA Transformer")
+        )
+        super().__init__(vocab)
+
         ffindex_path = Path(ffindex_path)
         index_file = ffindex_path.with_suffix(".ffindex")
         data_file = ffindex_path.with_suffix(".ffdata")
         self.ffindex = MSAFFindex(index_file, data_file)
-        self.vocab = Vocab.from_esm_alphabet(
-            esm.data.Alphabet.from_architecture("MSA Transformer")
-        )
 
     def __len__(self):
         return len(self.ffindex)
@@ -31,17 +32,19 @@ class MSADataset(CollatableDataset):
         return collate_tensors(batch)
 
 
-class TRRosettaContactDataset(torch.utils.data.Dataset):
+class TRRosettaContactDataset(CollatableVocabDataset):
     def __init__(
         self,
         data_path: PathLike,
         split_files: Optional[Collection[str]] = None,
         max_seqs_per_msa: Optional[int] = 64,
     ):
-        data_path = Path(data_path)
-        self.vocab = Vocab.from_esm_alphabet(
+        vocab = Vocab.from_esm_alphabet(
             esm.data.Alphabet.from_architecture("MSA Transformer")
         )
+        super().__init__(vocab)
+
+        data_path = Path(data_path)
         self.a3m_data = A3MDataset(
             data_path / "a3m",
             split_files=split_files,
