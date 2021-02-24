@@ -1,3 +1,4 @@
+from typing import Optional
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
@@ -18,6 +19,7 @@ from modules import (
 )
 
 import lr_schedulers
+from dataset import TRRosettaContactDataset
 
 
 class Average(pl.metrics.Metric):
@@ -64,6 +66,7 @@ class MSATransformer(pl.LightningModule):
         lr_scheduler: str = "constant",
         warmup_steps: int = 0,
         max_steps: int = 10000,
+        contact_train_data: Optional[TRRosettaContactDataset] = None,
     ):
         super().__init__()
         self.alphabet_size = vocab_size
@@ -87,8 +90,7 @@ class MSATransformer(pl.LightningModule):
         self.lr_scheduler = lr_scheduler
         self.warmup_steps = warmup_steps
         self.max_steps = max_steps
-
-        self.save_hyperparameters()
+        self.contact_train_data = contact_train_data
 
         self.embed_tokens = nn.Embedding(
             self.alphabet_size, embed_dim, padding_idx=self.pad_idx
@@ -136,6 +138,13 @@ class MSATransformer(pl.LightningModule):
             output_dim=self.alphabet_size,
             weight=self.embed_tokens.weight,
         )
+
+        self.metrics = nn.ModuleDict({
+            "valid/Long Range AUC": Average(),
+            "valid/Long Range P@L": Average(),
+            "valid/Long Range P@L2": Average(),
+            "valid/Long Range P@L5": Average(),
+        })
 
     def forward(
         self, tokens, repr_layers=[], need_head_weights=False, return_contacts=False
@@ -224,12 +233,12 @@ class MSATransformer(pl.LightningModule):
         self.train_contact_regression()
 
     def train_contact_regression(self, verbose=False):
-        from dataset import TRRosettaContactDataset
 
-        with open("/data/proteins/trrosetta/unsupervised/train.txt") as f:
-            pdbs = f.read().splitlines()
-        data = TRRosettaContactDataset("/data/proteins/trrosetta", split_files=pdbs)
-
+        data = self.contact_train_data
+        if data is None:
+            raise RuntimeError(
+                "Cannot train regression without trRosetta contact training set."
+            )
         X = []
         y = []
         with torch.no_grad():
@@ -270,6 +279,22 @@ class MSATransformer(pl.LightningModule):
             }
         )
 
+    def training_step(self, batch, batch_idx):
+        src, tgt = batch
+        logits = self(src)["logits"]
+        valid_mask = tgt != self.pad_idx
+
+        logits = logits[valid_mask]
+        tgt = tgt[valid_mask]
+        loss = nn.CrossEntropyLoss(reduction="none")(logits, tgt)
+        perplexity = loss.float().exp().mean()
+        loss = loss.mean()
+
+        self.log("train/loss", loss)
+        self.log("train/perplexity", perplexity)
+
+        return loss
+
     def validation_step(self, batch, batch_idx):
         predictions = self.predict_contacts(batch["src_tokens"])
         metrics = compute_precisions(
@@ -280,7 +305,9 @@ class MSATransformer(pl.LightningModule):
         )
 
         for key, value in metrics.items():
-            self.log(f"valid/Long Range {key}", value, prob_bar=key == "P@L")
+            key = f"valid/Long Range {key}"
+            logger = self.metrics[key](value)
+            self.log(key, logger, prog_bar=key.endswith("P@L"))
 
     def max_tokens_per_msa_(self, value: int) -> None:
         """The MSA Transformer automatically batches attention computations when
