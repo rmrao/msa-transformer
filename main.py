@@ -174,20 +174,16 @@ def train(cfg: Config) -> None:
         contact_train_data=trrosetta_train_data,
     )
 
-    if cfg.logging.wandb_project:
-        try:
-            # Requires wandb to be installed
-            logger: Union[
-                pl.loggers.LightningLoggerBase, bool
-            ] = pl.loggers.WandbLogger(project=cfg.logging.wandb_project)
-            logger.log_hyperparams(cfg.train)
-            logger.log_hyperparams(cfg.model)
-        except ImportError:
-            raise ImportError(
-                "Cannot use W&B logger w/o W&b install. Run `pip install wandb` first."
-            )
-    else:
-        logger = True
+    # Requires wandb to be installed
+    logger = (
+        pl.loggers.WandbLogger(project=cfg.logging.wandb_project)
+        if cfg.logging.wandb_project is not None
+        else True
+    )
+
+    if isinstance(logger, pl.LightningLoggerBase):
+        logger.log_hyperparams(cfg.train)
+        logger.log_hyperparams(cfg.model)
 
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor="valid/Long Range P@L",
