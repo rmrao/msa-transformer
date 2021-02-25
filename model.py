@@ -126,6 +126,7 @@ class MSATransformer(pl.LightningModule):
             self.append_eos,
             eos_idx=self.eos_idx,
         )
+        self.contact_head.requires_grad_(False)
         self.embed_positions = LearnedPositionalEmbedding(
             max_seqlen,
             embed_dim,

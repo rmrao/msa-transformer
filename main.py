@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Optional, Union, List, Any
 import sys
 from pathlib import Path
 import operator
@@ -15,7 +15,7 @@ from evo.dataset import (
 from evo.tokenization import Vocab
 from model import MSATransformer
 from dataset import MSADataset, TRRosettaContactDataset
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hydra
 from hydra.core.config_store import ConfigStore
 from omegaconf import MISSING
@@ -34,8 +34,8 @@ root_logger.addHandler(console_handler)
 
 @dataclass
 class DataConfig:
-    ffindex_path: str = MISSING
-    trrosetta_path: str = MISSING
+    ffindex_path: str = "data/UniRef30_2020_02_a3m"
+    trrosetta_path: str = "data/trrosetta"
     trrosetta_train_split: str = "train.txt"
     trrosetta_valid_split: str = "test.txt"
     num_workers: int = 3
@@ -78,6 +78,17 @@ class MSATransformerModelConfig:
 
 
 @dataclass
+class MSATransformerSmallModelConfig(MSATransformerModelConfig):
+    embed_dim: int = 384
+    num_attention_heads: int = 12
+    num_layers: int = 6
+    embed_positions_msa: bool = True
+    dropout: float = 0.1
+    attention_dropout: float = 0.1
+    activation_dropout: float = 0.1
+
+
+@dataclass
 class LoggingConfig:
     wandb_project: Optional[str] = None
     log_every_n_steps: int = 50
@@ -85,21 +96,30 @@ class LoggingConfig:
     track_grad_norm: bool = False
 
 
+defaults = [{"model": "msa-transformer"}]
+
+
 @dataclass
 class Config:
-    data: DataConfig
+    defaults: List[Any] = field(default_factory=lambda: defaults)
+
+    data: DataConfig = DataConfig()
     train: TrainConfig = TrainConfig()
     model: MSATransformerModelConfig = MSATransformerModelConfig()
     logging: LoggingConfig = LoggingConfig()
     fast_dev_run: bool = False
     resume_from_checkpoint: Optional[str] = None
+    val_check_interval: int = 5000
 
 
 cs = ConfigStore.instance()
 cs.store(name="config", node=Config)
 cs.store(group="data", name="default", node=DataConfig)
 cs.store(group="train", name="default", node=TrainConfig)
-cs.store(group="model", name="msa-transformer", node=TrainConfig)
+cs.store(group="model", name="msa-transformer", node=MSATransformerModelConfig)
+cs.store(
+    group="model", name="msa-transformer-small", node=MSATransformerSmallModelConfig
+)
 cs.store(group="logging", name="default", node=LoggingConfig)
 
 
@@ -116,12 +136,12 @@ def train(cfg: Config) -> None:
         cfg.train.random_token_prob,
         cfg.train.random_token_prob,
     )
-    train_data = AutoBatchingDataset(train_data, cfg.train.max_tokens)
+    # train_data = AutoBatchingDataset(train_data, cfg.train.max_tokens)
     train_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
         train_data,
         batch_size=1,
         num_workers=cfg.data.num_workers,
-        collate_fn=operator.itemgetter(0),
+        collate_fn=train_data.collater,
     )
 
     with open(Path(cfg.data.trrosetta_path) / cfg.data.trrosetta_train_split) as f:
@@ -182,8 +202,8 @@ def train(cfg: Config) -> None:
     )
 
     if isinstance(logger, pl.loggers.LightningLoggerBase):
-        logger.log_hyperparams(cfg.train)
-        logger.log_hyperparams(cfg.model)
+        logger.log_hyperparams(cfg.train)  # type: ignore
+        logger.log_hyperparams(cfg.model)  # type: ignore
 
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor="valid/Long Range P@L",
@@ -213,6 +233,7 @@ def train(cfg: Config) -> None:
         progress_bar_refresh_rate=cfg.logging.progress_bar_refresh_rate,
         resume_from_checkpoint=cfg.resume_from_checkpoint,
         track_grad_norm=cfg.logging.track_grad_norm,
+        val_check_interval=cfg.val_check_interval,
     )
 
     trainer.fit(model, train_dataloader=train_loader, val_dataloaders=valid_loader)
