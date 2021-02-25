@@ -146,6 +146,21 @@ class MSATransformer(pl.LightningModule):
             "valid/Long Range P@L2": Average(),
             "valid/Long Range P@L5": Average(),
         })
+        self.init_weights()
+
+    def init_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, std=0.02)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, std=0.02)
+                if module.padding_idx is not None:
+                    module.weight.data[module.padding_idx].zero_()
+            elif isinstance(module, nn.LayerNorm) and module.elementwise_affine:
+                nn.init.ones_(module.weight)
+                nn.init.zeros_(module.bias)
 
     def forward(
         self, tokens, repr_layers=[], need_head_weights=False, return_contacts=False

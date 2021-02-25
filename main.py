@@ -142,6 +142,7 @@ def train(cfg: Config) -> None:
         batch_size=1,
         num_workers=cfg.data.num_workers,
         collate_fn=train_data.collater,
+        shuffle=True,
     )
 
     with open(Path(cfg.data.trrosetta_path) / cfg.data.trrosetta_train_split) as f:
@@ -215,11 +216,12 @@ def train(cfg: Config) -> None:
         mode="max",
         patience=cfg.train.patience,
     )
+    lr_logger = pl.callbacks.LearningRateMonitor()
 
     trainer = pl.Trainer(
         logger=logger,
         checkpoint_callback=checkpoint_callback,
-        callbacks=[early_stopping_callback],
+        callbacks=[early_stopping_callback, lr_logger],
         accumulate_grad_batches=cfg.train.accumulate_grad_batches,
         distributed_backend=cfg.train.distributed_backend,
         fast_dev_run=cfg.fast_dev_run,
@@ -233,7 +235,7 @@ def train(cfg: Config) -> None:
         progress_bar_refresh_rate=cfg.logging.progress_bar_refresh_rate,
         resume_from_checkpoint=cfg.resume_from_checkpoint,
         track_grad_norm=cfg.logging.track_grad_norm,
-        val_check_interval=cfg.val_check_interval,
+        val_check_interval=cfg.val_check_interval * cfg.train.accumulate_grad_batches,
     )
 
     trainer.fit(model, train_dataloader=train_loader, val_dataloaders=valid_loader)
