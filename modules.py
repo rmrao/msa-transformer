@@ -1,5 +1,5 @@
 import math
-from typing import Optional
+from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,6 +16,55 @@ def gelu(x):
     )
     """
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
+
+
+class TransformerLayer(nn.Module):
+    """Transformer layer block."""
+
+    def __init__(self, embed_dim, ffn_embed_dim, attention_heads):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.ffn_embed_dim = ffn_embed_dim
+        self.attention_heads = attention_heads
+
+        self.self_attn = MultiheadAttention(
+            self.embed_dim,
+            self.attention_heads,
+        )
+        self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
+
+        self.fc1 = nn.Linear(self.embed_dim, self.ffn_embed_dim)
+        self.fc2 = nn.Linear(self.ffn_embed_dim, self.embed_dim)
+
+        self.final_layer_norm = nn.LayerNorm(self.embed_dim)
+
+    def forward(
+        self,
+        x,
+        self_attn_mask=None,
+        self_attn_padding_mask=None,
+        need_head_weights=False,
+    ):
+        residual = x
+        x = self.self_attn_layer_norm(x)
+        x, attn = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=self_attn_padding_mask,
+            need_weights=True,
+            need_head_weights=need_head_weights,
+            attn_mask=self_attn_mask,
+        )
+        x = residual + x
+
+        residual = x
+        x = self.final_layer_norm(x)
+        x = gelu(self.fc1(x))
+        x = self.fc2(x)
+        x = residual + x
+
+        return x, attn
 
 
 class AxialTransformerLayer(nn.Module):
@@ -255,6 +304,196 @@ class FeedForwardNetwork(nn.Module):
         x = self.activation_dropout_module(x)
         x = self.fc2(x)
         return x
+
+
+class MultiheadAttention(nn.Module):
+    """Multi-headed attention.
+
+    See "Attention Is All You Need" for more details.
+    """
+
+    def __init__(
+        self,
+        embed_dim,
+        num_heads,
+        dropout=0.0,
+        bias=True,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.head_dim = embed_dim // num_heads
+        assert (
+            self.head_dim * num_heads == self.embed_dim
+        ), "embed_dim must be divisible by num_heads"
+        self.scaling = self.head_dim ** -0.5
+
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+
+        self.reset_parameters()
+        self.enable_torch_version = hasattr(F, "multi_head_attention_forward")
+
+    def reset_parameters(self):
+        # Empirically observed the convergence to be much better with
+        # the scaled initialization
+        nn.init.xavier_uniform_(self.k_proj.weight, gain=1 / math.sqrt(2))
+        nn.init.xavier_uniform_(self.v_proj.weight, gain=1 / math.sqrt(2))
+        nn.init.xavier_uniform_(self.q_proj.weight, gain=1 / math.sqrt(2))
+
+        nn.init.xavier_uniform_(self.out_proj.weight)
+        if self.out_proj.bias is not None:
+            nn.init.constant_(self.out_proj.bias, 0.)
+
+    def forward(
+        self,
+        query,
+        key: Optional[torch.Tensor],
+        value: Optional[torch.Tensor],
+        key_padding_mask: Optional[torch.Tensor] = None,
+        need_weights: bool = True,
+        attn_mask: Optional[torch.Tensor] = None,
+        before_softmax: bool = False,
+        need_head_weights: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Input shape: Time x Batch x Channel
+
+        Args:
+            key_padding_mask (ByteTensor, optional): mask to exclude
+                keys that are pads, of shape `(batch, src_len)`, where
+                padding elements are indicated by 1s.
+            need_weights (bool, optional): return the attention weights,
+                averaged over heads (default: False).
+            attn_mask (ByteTensor, optional): typically used to
+                implement causal attention, where the mask prevents the
+                attention from looking forward in time (default: None).
+            before_softmax (bool, optional): return the raw attention
+                weights and values before the attention softmax.
+            need_head_weights (bool, optional): return the attention
+                weights for each head. Implies *need_weights*. Default:
+                return the average attention weights over all heads.
+        """
+        if need_head_weights:
+            need_weights = True
+
+        tgt_len, bsz, embed_dim = query.size()
+        assert embed_dim == self.embed_dim
+        assert list(query.size()) == [tgt_len, bsz, embed_dim]
+
+        if (
+            self.enable_torch_version
+            # A workaround for quantization to work. Otherwise JIT compilation
+            # treats bias in linear module as method.
+            and not torch.jit.is_scripting()
+            and not need_head_weights
+        ):
+            assert key is not None and value is not None
+            return F.multi_head_attention_forward(  # type: ignore
+                query,
+                key,
+                value,
+                self.embed_dim,
+                self.num_heads,
+                torch.empty([0]),
+                torch.cat((self.q_proj.bias, self.k_proj.bias, self.v_proj.bias)),
+                self.bias_k,
+                self.bias_v,
+                False,
+                self.dropout,
+                self.out_proj.weight,
+                self.out_proj.bias,
+                self.training,
+                key_padding_mask,
+                need_weights,
+                attn_mask,
+                use_separate_proj_weight=True,
+                q_proj_weight=self.q_proj.weight,
+                k_proj_weight=self.k_proj.weight,
+                v_proj_weight=self.v_proj.weight,
+            )
+
+        q = self.q_proj(query)
+        k = self.k_proj(query)
+        v = self.v_proj(query)
+        q *= self.scaling
+
+        q = (
+            q.contiguous()
+            .view(tgt_len, bsz * self.num_heads, self.head_dim)
+            .transpose(0, 1)
+        )
+        k = (
+            k.contiguous()
+            .view(-1, bsz * self.num_heads, self.head_dim)
+            .transpose(0, 1)
+        )
+        v = (
+            v.contiguous()
+            .view(-1, bsz * self.num_heads, self.head_dim)
+            .transpose(0, 1)
+        )
+
+        src_len = k.size(1)
+
+        # This is part of a workaround to get around fork/join parallelism
+        # not supporting Optional types.
+        if key_padding_mask is not None and key_padding_mask.dim() == 0:
+            key_padding_mask = None
+
+        if key_padding_mask is not None:
+            assert key_padding_mask.size(0) == bsz
+            assert key_padding_mask.size(1) == src_len
+
+        attn_weights = torch.bmm(q, k.transpose(1, 2))
+
+        assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
+
+        if attn_mask is not None:
+            attn_mask = attn_mask.unsqueeze(0)
+            if self.onnx_trace:
+                attn_mask = attn_mask.repeat(attn_weights.size(0), 1, 1)
+            attn_weights += attn_mask
+
+        if key_padding_mask is not None:
+            # don't attend to padding symbols
+            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
+            attn_weights = attn_weights.masked_fill(
+                key_padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool), float("-inf")
+            )
+            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+
+        if before_softmax:
+            return attn_weights, v
+
+        attn_weights_float = F.softmax(
+            attn_weights, dim=-1, dtype=torch.float32  # type: ignore
+        )
+        attn_weights = attn_weights_float.type_as(attn_weights)
+        attn_probs = F.dropout(
+            attn_weights_float.type_as(attn_weights),
+            p=self.dropout,
+            training=self.training,
+        )
+
+        attn = torch.bmm(attn_probs, v)
+        assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
+        attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+        attn = self.out_proj(attn)
+        attn_weights: Optional[torch.Tensor] = None  # type: ignore
+        if need_weights:
+            attn_weights = attn_weights_float.view(
+                bsz, self.num_heads, tgt_len, src_len
+            ).transpose(1, 0)
+            if not need_head_weights:
+                # average attention weights over heads
+                attn_weights = attn_weights.mean(dim=0)
+
+        return attn, attn_weights
 
 
 class RowSelfAttention(nn.Module):

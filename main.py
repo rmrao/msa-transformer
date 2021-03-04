@@ -129,7 +129,7 @@ def train(cfg: Config) -> None:
     vocab = Vocab.from_esm_alphabet(alphabet)
     train_data = MSADataset(cfg.data.ffindex_path)
     train_data = RandomCropDataset(train_data, cfg.train.max_seqlen)
-    train_data = SubsampleMSADataset(train_data, cfg.train.max_tokens)
+    train_data = SubsampleMSADataset(train_data, cfg.train.max_tokens, max_seqs=1024)
     train_data = MaskedTokenWrapperDataset(
         train_data,
         cfg.train.mask_prob,
