@@ -309,6 +309,7 @@ class ESM1b(BaseProteinModel):
             self.append_eos,
             eos_idx=self.eos_idx,
         )
+        self.contact_head.requires_grad_(False)
 
         self.init_weights()
 
@@ -317,11 +318,10 @@ class ESM1b(BaseProteinModel):
     ):
         if return_contacts:
             need_head_weights = True
-
         assert tokens.ndim == 2
-        padding_mask = tokens.eq(self.padding_idx)  # B, T
+        padding_mask = tokens.eq(self.pad_idx)  # B, T
 
-        x = self.embed_scale * self.embed_tokens(tokens)
+        x = self.embed_tokens(tokens)
 
         x = x + self.embed_positions(tokens)
 
@@ -379,6 +379,9 @@ class ESM1b(BaseProteinModel):
                 result["contacts"] = contacts
 
         return result
+
+    def get_sequence_attention(self, tokens):
+        return self(tokens.to(device=self.device), need_head_weights=True)["attentions"]
 
     @classmethod
     def from_esm(cls):
@@ -602,6 +605,9 @@ class MSATransformer(BaseProteinModel):
         for module in self.modules():
             if isinstance(module, (RowSelfAttention, ColumnSelfAttention)):
                 module.max_tokens_per_msa = value
+
+    def get_sequence_attention(self, tokens):
+        return self(tokens.to(device=self.device), need_head_weights=True)["row_attentions"]
 
     @classmethod
     def from_esm(cls):

@@ -36,12 +36,10 @@ class TRRosettaContactDataset(CollatableVocabDataset):
     def __init__(
         self,
         data_path: PathLike,
+        vocab: Vocab,
         split_files: Optional[Collection[str]] = None,
         max_seqs_per_msa: Optional[int] = 64,
     ):
-        vocab = Vocab.from_esm_alphabet(
-            esm.data.Alphabet.from_architecture("MSA Transformer")
-        )
         super().__init__(vocab)
 
         data_path = Path(data_path)
