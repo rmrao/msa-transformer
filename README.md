@@ -1,4 +1,5 @@
 # msa-transformer
+![](https://github.com/rmrao/msa-transformer/workflows/build/badge.svg)
 
 ## Installation
 Create a fresh conda environment and run `pip install -r requirements.txt`.
