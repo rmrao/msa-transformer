@@ -607,7 +607,9 @@ class MSATransformer(BaseProteinModel):
                 module.max_tokens_per_msa = value
 
     def get_sequence_attention(self, tokens):
-        return self(tokens.to(device=self.device), need_head_weights=True)["row_attentions"]
+        return self(tokens.to(device=self.device), need_head_weights=True)[
+            "row_attentions"
+        ]
 
     @classmethod
     def from_esm(cls):

@@ -1,4 +1,4 @@
-from typing import Optional, Union, List, Any
+from typing import Optional, List, Any
 import sys
 from pathlib import Path
 import logging
