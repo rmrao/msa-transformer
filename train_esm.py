@@ -48,7 +48,7 @@ class TrainConfig:
     warmup_steps: int = 16000
     max_seqlen: int = 1024
     max_tokens: int = 2 ** 17
-    valid_batch_size: int = 16
+    valid_batch_size: int = 2
     accumulate_grad_batches: int = 1
     distributed_backend: str = "ddp"
     gpus: int = 1
