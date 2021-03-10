@@ -1,7 +1,6 @@
-from typing import Optional, Union, List, Any
+from typing import Optional, List, Any
 import sys
 from pathlib import Path
-import operator
 import logging
 import pytorch_lightning as pl
 import torch
@@ -10,7 +9,6 @@ from evo.dataset import (
     RandomCropDataset,
     SubsampleMSADataset,
     MaskedTokenWrapperDataset,
-    AutoBatchingDataset,
 )
 from evo.tokenization import Vocab
 from model import MSATransformer
@@ -18,7 +16,6 @@ from dataset import MSADataset, TRRosettaContactDataset
 from dataclasses import dataclass, field
 import hydra
 from hydra.core.config_store import ConfigStore
-from omegaconf import MISSING
 
 
 root_logger = logging.getLogger()
@@ -153,12 +150,14 @@ def train(cfg: Config) -> None:
 
     trrosetta_train_data = TRRosettaContactDataset(
         cfg.data.trrosetta_path,
+        vocab,
         split_files=train_pdbs,
         max_seqs_per_msa=cfg.train.max_seqs_validation,
     )
 
     trrosetta_valid_data = TRRosettaContactDataset(
         cfg.data.trrosetta_path,
+        vocab,
         split_files=valid_pdbs,
         max_seqs_per_msa=cfg.train.max_seqs_validation,
     )

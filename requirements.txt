@@ -1,0 +1,6 @@
+torch
+pytorch_lightning
+numpy
+hydra-core
+scikit-learn
+git+git://github.com/rmrao/evo@main#egg=evo

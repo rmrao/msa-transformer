@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn
@@ -59,6 +59,7 @@ class BaseProteinModel(pl.LightningModule, ABC):
         lr_scheduler: str = "constant",
         warmup_steps: int = 0,
         max_steps: int = 10000,
+        adam_betas: Tuple[float, float] = (0.9, 0.999),
         contact_train_data: Optional[TRRosettaContactDataset] = None,
     ):
         super().__init__()
@@ -75,6 +76,7 @@ class BaseProteinModel(pl.LightningModule, ABC):
         self.lr_scheduler = lr_scheduler
         self.warmup_steps = warmup_steps
         self.max_steps = max_steps
+        self.adam_betas = adam_betas
         self.contact_train_data = contact_train_data
 
         self.metrics = nn.ModuleDict(
@@ -217,7 +219,7 @@ class BaseProteinModel(pl.LightningModule, ABC):
             except ImportError:
                 raise ImportError("Apex must be installed to use FusedLAMB optimizer.")
             optimizer_type = FusedLAMB
-        optimizer = optimizer_type(optimizer_grouped_parameters, lr=self.learning_rate)
+        optimizer = optimizer_type(optimizer_grouped_parameters, lr=self.learning_rate, betas=self.adam_betas)
         scheduler = lr_schedulers.get(self.lr_scheduler)(
             optimizer, self.warmup_steps, self.max_steps
         )
@@ -241,6 +243,7 @@ class ESM1b(BaseProteinModel):
         weight_decay: float = 1e-4,
         lr_scheduler: str = "constant",
         warmup_steps: int = 0,
+        adam_betas: Tuple[float, float] = (0.9, 0.999),
         max_steps: int = 10000,
         contact_train_data: Optional[TRRosettaContactDataset] = None,
         embed_dim: int = 768,
@@ -265,6 +268,7 @@ class ESM1b(BaseProteinModel):
             lr_scheduler=lr_scheduler,
             warmup_steps=warmup_steps,
             max_steps=max_steps,
+            adam_betas=adam_betas,
             contact_train_data=contact_train_data,
         )
         self.embed_dim = embed_dim
@@ -427,6 +431,7 @@ class MSATransformer(BaseProteinModel):
         weight_decay: float = 1e-4,
         lr_scheduler: str = "constant",
         warmup_steps: int = 0,
+        adam_betas: Tuple[float, float] = (0.9, 0.999),
         max_steps: int = 10000,
         contact_train_data: Optional[TRRosettaContactDataset] = None,
         embed_dim: int = 768,
@@ -452,6 +457,7 @@ class MSATransformer(BaseProteinModel):
             weight_decay=weight_decay,
             lr_scheduler=lr_scheduler,
             warmup_steps=warmup_steps,
+            adam_betas=adam_betas,
             max_steps=max_steps,
             contact_train_data=contact_train_data,
         )
@@ -607,7 +613,9 @@ class MSATransformer(BaseProteinModel):
                 module.max_tokens_per_msa = value
 
     def get_sequence_attention(self, tokens):
-        return self(tokens.to(device=self.device), need_head_weights=True)["row_attentions"]
+        return self(tokens.to(device=self.device), need_head_weights=True)[
+            "row_attentions"
+        ]
 
     @classmethod
     def from_esm(cls):

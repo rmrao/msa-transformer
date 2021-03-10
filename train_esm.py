@@ -1,4 +1,4 @@
-from typing import Optional, Union, List, Any
+from typing import Optional, List, Any, Tuple
 import sys
 from pathlib import Path
 import logging
@@ -29,13 +29,15 @@ console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(formatter)
 root_logger.addHandler(console_handler)
 
+current_directory = Path(__file__).parent.absolute()
+
 
 @dataclass
 class DataConfig:
-    uniref50_path: str = "/data/proteins/uniref/uniref50/train.fasta"
-    trrosetta_path: str = "/data/proteins/trrosetta/"
-    trrosetta_train_split: str = "unsupervised/train.txt"
-    trrosetta_valid_split: str = "unsupervised/test.txt"
+    fasta_path: str = str(current_directory / "data/trrosetta.fasta")
+    trrosetta_path: str = str(current_directory / "data")
+    trrosetta_train_split: str = "valid_train.txt"
+    trrosetta_valid_split: str = "valid_test.txt"
     num_workers: int = 3
 
 
@@ -50,13 +52,14 @@ class TrainConfig:
     max_tokens: int = 2 ** 17
     valid_batch_size: int = 2
     accumulate_grad_batches: int = 1
-    distributed_backend: str = "ddp"
+    distributed_backend: Optional[str] = None
     gpus: int = 1
     gradient_clip_val: float = 1.0
     max_epochs: int = 1000
+    adam_betas: Tuple[float, float] = (0.9, 0.999)
     max_steps: int = 1000000
     num_nodes: int = 1
-    precision: int = 16
+    precision: int = 32
     patience: int = 10
     mask_prob: float = 0.15
     random_token_prob: float = 0.1
@@ -117,7 +120,7 @@ cs.store(group="logging", name="default", node=LoggingConfig)
 def train(cfg: Config) -> None:
     alphabet = esm.data.Alphabet.from_architecture("ESM-1b")
     vocab = Vocab.from_esm_alphabet(alphabet)
-    train_data = EncodedFastaDataset(cfg.data.uniref50_path, vocab)
+    train_data = EncodedFastaDataset(cfg.data.fasta_path, vocab)
     train_data = RandomCropDataset(train_data, cfg.train.max_seqlen)
     train_data = MaskedTokenWrapperDataset(
         train_data,
