@@ -1,4 +1,4 @@
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Tuple
 import sys
 from pathlib import Path
 import logging
@@ -56,6 +56,7 @@ class TrainConfig:
     gpus: int = 1
     gradient_clip_val: float = 1.0
     max_epochs: int = 1000
+    adam_betas: Tuple[float, float] = (0.9, 0.999)
     max_steps: int = 1000000
     num_nodes: int = 1
     precision: int = 32
