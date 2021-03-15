@@ -153,6 +153,7 @@ def train(cfg: Config) -> None:
     if isinstance(logger, pl.loggers.LightningLoggerBase):
         logger.log_hyperparams(cfg.train)  # type: ignore
         logger.log_hyperparams(cfg.model)  # type: ignore
+        logger.log_hyperparams(cfg.optimizer)  # type: ignore
 
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor="valid/Long Range P@L",
