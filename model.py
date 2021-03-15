@@ -283,12 +283,17 @@ class ESM1b(BaseProteinModel):
             self.embed_dim,
             padding_idx=self.pad_idx,
         )
+        self.dropout_layer = nn.Dropout(dropout)
+
         self.layers = nn.ModuleList(
             [
                 TransformerLayer(
                     self.embed_dim,
                     4 * self.embed_dim,
                     self.num_attention_heads,
+                    dropout=self.dropout,
+                    attention_dropout=self.attention_dropout,
+                    activation_dropout=self.activation_dropout,
                 )
                 for _ in range(self.num_layers)
             ]
@@ -330,6 +335,8 @@ class ESM1b(BaseProteinModel):
         x = x + self.embed_positions(tokens)
 
         x = self.emb_layer_norm_before(x)
+        x = self.dropout_layer(x)
+
         if padding_mask is not None:
             x = x * (1 - padding_mask.unsqueeze(-1).type_as(x))
 

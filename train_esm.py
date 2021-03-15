@@ -184,6 +184,7 @@ def train(cfg: Config) -> None:
         lr_scheduler=cfg.train.lr_scheduler,
         warmup_steps=cfg.train.warmup_steps,
         max_steps=cfg.train.max_steps,
+        adam_betas=cfg.train.adam_betas,
         contact_train_data=trrosetta_train_data,
     )
 

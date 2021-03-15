@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from evo.tensor import symmetrize, apc
+from product_key_memory import PKM
 
 
 def gelu(x):
@@ -21,6 +22,70 @@ def gelu(x):
 class TransformerLayer(nn.Module):
     """Transformer layer block."""
 
+    def __init__(
+        self,
+        embed_dim: int,
+        ffn_embed_dim: int,
+        attention_heads: int,
+        dropout: float = 0.1,
+        attention_dropout: float = 0.1,
+        activation_dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.ffn_embed_dim = ffn_embed_dim
+        self.attention_heads = attention_heads
+
+        self.dropout = nn.Dropout(dropout)
+        self.activation_dropout = nn.Dropout(activation_dropout)
+
+        self.self_attn = MultiheadAttention(
+            self.embed_dim,
+            self.attention_heads,
+            dropout=attention_dropout,
+        )
+        self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
+
+        self.fc1 = nn.Linear(self.embed_dim, self.ffn_embed_dim)
+        self.fc2 = nn.Linear(self.ffn_embed_dim, self.embed_dim)
+
+        self.final_layer_norm = nn.LayerNorm(self.embed_dim)
+
+    def forward(
+        self,
+        x,
+        self_attn_mask=None,
+        self_attn_padding_mask=None,
+        need_head_weights=False,
+    ):
+        residual = x
+        x = self.self_attn_layer_norm(x)
+        x, attn = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=self_attn_padding_mask,
+            need_weights=True,
+            need_head_weights=need_head_weights,
+            attn_mask=self_attn_mask,
+        )
+        x = self.dropout(x)
+        x = residual + x
+
+        residual = x
+        x = self.final_layer_norm(x)
+        x = gelu(self.fc1(x))
+        x = self.activation_dropout(x)
+        x = self.fc2(x)
+        x = self.dropout(x)
+        x = residual + x
+
+        return x, attn
+
+
+class PKMLayer(nn.Module):
+    """Transformer layer block."""
+
     def __init__(self, embed_dim, ffn_embed_dim, attention_heads):
         super().__init__()
         self.embed_dim = embed_dim
@@ -33,8 +98,13 @@ class TransformerLayer(nn.Module):
         )
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
 
-        self.fc1 = nn.Linear(self.embed_dim, self.ffn_embed_dim)
-        self.fc2 = nn.Linear(self.ffn_embed_dim, self.embed_dim)
+        self.pkm = PKM(
+            self.embed_dim,
+            self.pkm_attention_heads,
+            self.num_product_keys,
+            self.pkm_topk,
+            self.pkm_dim_head,
+        )
 
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
 
@@ -348,7 +418,7 @@ class MultiheadAttention(nn.Module):
 
         nn.init.xavier_uniform_(self.out_proj.weight)
         if self.out_proj.bias is not None:
-            nn.init.constant_(self.out_proj.bias, 0.)
+            nn.init.constant_(self.out_proj.bias, 0.0)
 
     def forward(
         self,
@@ -427,16 +497,8 @@ class MultiheadAttention(nn.Module):
             .view(tgt_len, bsz * self.num_heads, self.head_dim)
             .transpose(0, 1)
         )
-        k = (
-            k.contiguous()
-            .view(-1, bsz * self.num_heads, self.head_dim)
-            .transpose(0, 1)
-        )
-        v = (
-            v.contiguous()
-            .view(-1, bsz * self.num_heads, self.head_dim)
-            .transpose(0, 1)
-        )
+        k = k.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)
+        v = v.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)
 
         src_len = k.size(1)
 
