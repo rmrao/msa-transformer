@@ -22,6 +22,7 @@ from modules import (
     RowSelfAttention,
     ColumnSelfAttention,
 )
+from product_key_memory import PKM
 
 import lr_schedulers
 from dataset import TRRosettaContactDataset
@@ -212,10 +213,19 @@ class BaseProteinModel(pl.LightningModule, ABC):
     def configure_optimizers(self):
         no_decay = ["norm", "LayerNorm"]
 
+        pkm_params = []
+        for module in self.modules():
+            if isinstance(module, PKM):
+                pkm_params.append(module.values.weight)
+        pkm_paramset = set(pkm_params)
+
         decay_params = []
         no_decay_params = []
 
         for name, param in self.named_parameters():
+            if param in pkm_paramset:
+                continue
+
             if any(nd in name for nd in no_decay):
                 no_decay_params.append(param)
             else:
@@ -224,6 +234,7 @@ class BaseProteinModel(pl.LightningModule, ABC):
         optimizer_grouped_parameters = [
             {"params": decay_params, "weight_decay": self.weight_decay},
             {"params": no_decay_params, "weight_decay": 0.0},
+            {"params": pkm_params, "weight_decay": 0.0, "lr": 4 * self.learning_rate}
         ]
 
         if self.optimizer_config.name == "adam":
