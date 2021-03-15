@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Union
 from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn
@@ -6,12 +6,15 @@ import pytorch_lightning as pl
 import numpy as np
 import sklearn.linear_model
 from tqdm import tqdm
+from dataclasses import dataclass, field
 
+from evo.tokenization import Vocab
 from evo.metrics import compute_precisions
 from evo.tensor import symmetrize, apc
 
 from modules import (
     TransformerLayer,
+    PKMLayer,
     AxialTransformerLayer,
     ContactPredictionHead,
     LearnedPositionalEmbedding,
@@ -43,40 +46,52 @@ class Average(pl.metrics.Metric):
         return self.total / self.samples
 
 
+@dataclass
+class TransformerLayerConfig:
+    embed_dim: int = 768
+    num_attention_heads: int = 12
+    dropout: float = 0.1
+    attention_dropout: float = 0.1
+    activation_dropout: float = 0.1
+
+
+@dataclass
+class PKMLayerConfig(TransformerLayerConfig):
+    pkm_attention_heads: int = 8
+    num_product_keys: int = 1024
+    pkm_topk: int = 32
+
+
+@dataclass
+class TransformerConfig:
+    layer: TransformerLayerConfig = TransformerLayerConfig()
+    pkm: PKMLayerConfig = PKMLayerConfig()
+    num_layers: int = 12
+    max_seqlen: int = 1024
+    pkm_layers: List[int] = field(default_factory=list)
+
+
+@dataclass
+class OptimizerConfig:
+    name: str = "adam"
+    learning_rate: float = 1e-4
+    weight_decay: float = 1e-4
+    lr_scheduler: str = "warmup_linear"
+    warmup_steps: int = 16000
+    adam_betas: Tuple[float, float] = (0.9, 0.999)
+    max_steps: int = 1000000
+
+
 class BaseProteinModel(pl.LightningModule, ABC):
     def __init__(
         self,
-        vocab_size: int,
-        bos_idx: int,
-        eos_idx: int,
-        pad_idx: int,
-        mask_idx: int,
-        prepend_bos: bool = True,
-        append_eos: bool = False,
-        optimizer: str = "adam",
-        learning_rate: float = 1e-4,
-        weight_decay: float = 1e-4,
-        lr_scheduler: str = "constant",
-        warmup_steps: int = 0,
-        max_steps: int = 10000,
-        adam_betas: Tuple[float, float] = (0.9, 0.999),
+        vocab: Vocab,
+        optimizer_config: OptimizerConfig = OptimizerConfig(),
         contact_train_data: Optional[TRRosettaContactDataset] = None,
     ):
         super().__init__()
-        self.alphabet_size = vocab_size
-        self.pad_idx = pad_idx
-        self.mask_idx = mask_idx
-        self.bos_idx = bos_idx
-        self.eos_idx = eos_idx
-        self.prepend_bos = prepend_bos
-        self.append_eos = append_eos
-        self.optimizer = optimizer
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.lr_scheduler = lr_scheduler
-        self.warmup_steps = warmup_steps
-        self.max_steps = max_steps
-        self.adam_betas = adam_betas
+        self.vocab = vocab
+        self.optimizer_config = optimizer_config
         self.contact_train_data = contact_train_data
 
         self.metrics = nn.ModuleDict(
@@ -211,17 +226,23 @@ class BaseProteinModel(pl.LightningModule, ABC):
             {"params": no_decay_params, "weight_decay": 0.0},
         ]
 
-        if self.optimizer == "adam":
+        if self.optimizer_config.name == "adam":
             optimizer_type = torch.optim.AdamW
-        elif self.optimizer == "lamb":
+        elif self.optimizer_config.name == "lamb":
             try:
                 from apex.optimizers import FusedLAMB
             except ImportError:
                 raise ImportError("Apex must be installed to use FusedLAMB optimizer.")
             optimizer_type = FusedLAMB
-        optimizer = optimizer_type(optimizer_grouped_parameters, lr=self.learning_rate, betas=self.adam_betas)
-        scheduler = lr_schedulers.get(self.lr_scheduler)(
-            optimizer, self.warmup_steps, self.max_steps
+        optimizer = optimizer_type(
+            optimizer_grouped_parameters,
+            lr=self.optimizer_config.learning_rate,
+            betas=self.optimizer_config.adam_betas,
+        )
+        scheduler = lr_schedulers.get(self.optimizer_config.lr_scheduler)(
+            optimizer,
+            self.optimizer_config.warmup_steps,
+            self.optimizer_config.max_steps,
         )
 
         scheduler_dict = {"scheduler": scheduler, "interval": "step"}
@@ -231,96 +252,90 @@ class BaseProteinModel(pl.LightningModule, ABC):
 class ESM1b(BaseProteinModel):
     def __init__(
         self,
-        vocab_size: int,
-        bos_idx: int,
-        eos_idx: int,
-        pad_idx: int,
-        mask_idx: int,
-        prepend_bos: bool = True,
-        append_eos: bool = False,
-        optimizer: str = "adam",
-        learning_rate: float = 1e-4,
-        weight_decay: float = 1e-4,
-        lr_scheduler: str = "constant",
-        warmup_steps: int = 0,
-        adam_betas: Tuple[float, float] = (0.9, 0.999),
-        max_steps: int = 10000,
+        vocab: Vocab,
+        model_config: TransformerConfig = TransformerConfig(),
+        optimizer_config: OptimizerConfig = OptimizerConfig(),
         contact_train_data: Optional[TRRosettaContactDataset] = None,
-        embed_dim: int = 768,
-        num_attention_heads: int = 12,
-        num_layers: int = 12,
-        dropout: float = 0.1,
-        attention_dropout: float = 0.1,
-        activation_dropout: float = 0.1,
-        max_seqlen: int = 1024,
     ):
         super().__init__(
-            vocab_size=vocab_size,
-            bos_idx=bos_idx,
-            eos_idx=eos_idx,
-            pad_idx=pad_idx,
-            mask_idx=mask_idx,
-            prepend_bos=prepend_bos,
-            append_eos=append_eos,
-            optimizer=optimizer,
-            learning_rate=learning_rate,
-            weight_decay=weight_decay,
-            lr_scheduler=lr_scheduler,
-            warmup_steps=warmup_steps,
-            max_steps=max_steps,
-            adam_betas=adam_betas,
+            vocab=vocab,
+            optimizer_config=optimizer_config,
             contact_train_data=contact_train_data,
         )
-        self.embed_dim = embed_dim
-        self.num_attention_heads = num_attention_heads
-        self.num_layers = num_layers
-        self.dropout = dropout
-        self.attention_dropout = attention_dropout
-        self.activation_dropout = activation_dropout
+        self.model_config = model_config
 
-        self.embed_tokens = nn.Embedding(
-            self.alphabet_size,
-            self.embed_dim,
-            padding_idx=self.pad_idx,
-        )
-        self.dropout_layer = nn.Dropout(dropout)
+        self.embed_tokens = self.build_embedding()
+        self.dropout_layer = nn.Dropout(model_config.layer.dropout)
 
-        self.layers = nn.ModuleList(
-            [
-                TransformerLayer(
-                    self.embed_dim,
-                    4 * self.embed_dim,
-                    self.num_attention_heads,
-                    dropout=self.dropout,
-                    attention_dropout=self.attention_dropout,
-                    activation_dropout=self.activation_dropout,
-                )
-                for _ in range(self.num_layers)
-            ]
-        )
+        self.layers = nn.ModuleList([])
+        for i in range(self.model_config.num_layers):
+            if i in self.model_config.pkm_layers:
+                layer: Union[TransformerLayer, PKMLayer] = self.build_pkm_layer()
+            else:
+                layer = self.build_transformer_layer()
+            self.layers.append(layer)
 
         self.embed_positions = LearnedPositionalEmbedding(
-            max_seqlen,
-            self.embed_dim,
-            self.pad_idx,
+            model_config.max_seqlen,
+            self.model_config.layer.embed_dim,
+            vocab.pad_idx,
         )
-        self.emb_layer_norm_before = nn.LayerNorm(self.embed_dim)
-        self.emb_layer_norm_after = nn.LayerNorm(self.embed_dim)
-        self.lm_head = RobertaLMHead(
-            embed_dim=self.embed_dim,
-            output_dim=self.alphabet_size,
-            weight=self.embed_tokens.weight,
-        )
-
-        self.contact_head = ContactPredictionHead(
-            self.num_layers * self.num_attention_heads,
-            self.prepend_bos,
-            self.append_eos,
-            eos_idx=self.eos_idx,
-        )
-        self.contact_head.requires_grad_(False)
+        self.emb_layer_norm_before = nn.LayerNorm(self.model_config.layer.embed_dim)
+        self.emb_layer_norm_after = nn.LayerNorm(self.model_config.layer.embed_dim)
+        self.lm_head = self.build_lm_head(weight=self.embed_tokens.weight)
+        self.contact_head = self.build_contact_head()
 
         self.init_weights()
+
+    def build_embedding(self) -> nn.Embedding:
+        return nn.Embedding(
+            len(self.vocab),
+            self.model_config.layer.embed_dim,
+            padding_idx=self.vocab.pad_idx,
+        )
+
+    def build_transformer_layer(self) -> TransformerLayer:
+        config = self.model_config.layer
+        return TransformerLayer(
+            embed_dim=config.embed_dim,
+            ffn_embed_dim=4 * config.embed_dim,
+            attention_heads=config.num_attention_heads,
+            dropout=config.dropout,
+            attention_dropout=config.attention_dropout,
+            activation_dropout=config.activation_dropout,
+        )
+
+    def build_pkm_layer(self) -> PKMLayer:
+        config = self.model_config.pkm
+        return PKMLayer(
+            embed_dim=config.embed_dim,
+            ffn_embed_dim=4 * config.embed_dim,
+            attention_heads=config.num_attention_heads,
+            pkm_attention_heads=config.pkm_attention_heads,
+            pkm_dim_head=config.embed_dim // config.num_attention_heads,
+            num_product_keys=config.num_product_keys,
+            pkm_topk=config.pkm_topk,
+            dropout=config.dropout,
+            attention_dropout=config.attention_dropout,
+            activation_dropout=config.activation_dropout,
+        )
+
+    def build_lm_head(self, weight: torch.Tensor) -> RobertaLMHead:
+        return RobertaLMHead(
+            embed_dim=self.model_config.layer.embed_dim,
+            output_dim=len(self.vocab),
+            weight=weight,
+        )
+
+    def build_contact_head(self) -> ContactPredictionHead:
+        contact_head = ContactPredictionHead(
+            self.model_config.num_layers * self.model_config.layer.num_attention_heads,
+            self.vocab.prepend_bos,
+            self.vocab.append_eos,
+            eos_idx=self.vocab.eos_idx,
+        )
+        contact_head.requires_grad_(False)
+        return contact_head
 
     def forward(
         self, tokens, repr_layers=[], need_head_weights=False, return_contacts=False
@@ -402,44 +417,28 @@ class ESM1b(BaseProteinModel):
         esm_model, alphabet = esm.pretrained.esm1b_t33_650M_UR50S()
         args = esm_model.args
         vocab = Vocab.from_esm_alphabet(alphabet)
-        model = cls(
-            vocab_size=len(vocab),  # can be off b/c of null token
-            bos_idx=vocab.bos_idx,
-            eos_idx=vocab.eos_idx,
-            pad_idx=vocab.pad_idx,
-            mask_idx=vocab.mask_idx,
-            prepend_bos=vocab.prepend_bos,
-            append_eos=vocab.append_eos,
+        layer_config = TransformerLayerConfig(
             embed_dim=args.embed_dim,
             num_attention_heads=args.attention_heads,
-            num_layers=args.layers,
             dropout=args.dropout,
             attention_dropout=args.attention_dropout,
             activation_dropout=args.activation_dropout,
         )
+        model_config = TransformerConfig(
+            layer=layer_config,
+            num_layers=args.layers,
+        )
 
+        model = cls(vocab=vocab, model_config=model_config)
         model.load_state_dict(esm_model.state_dict())
-
         return model
 
 
 class MSATransformer(BaseProteinModel):
     def __init__(
         self,
-        vocab_size: int,
-        bos_idx: int,
-        eos_idx: int,
-        pad_idx: int,
-        mask_idx: int,
-        prepend_bos: bool = True,
-        append_eos: bool = False,
-        optimizer: str = "adam",
-        learning_rate: float = 1e-4,
-        weight_decay: float = 1e-4,
-        lr_scheduler: str = "constant",
-        warmup_steps: int = 0,
-        adam_betas: Tuple[float, float] = (0.9, 0.999),
-        max_steps: int = 10000,
+        vocab: Vocab,
+        optimizer_config: OptimizerConfig = OptimizerConfig(),
         contact_train_data: Optional[TRRosettaContactDataset] = None,
         embed_dim: int = 768,
         num_attention_heads: int = 12,
@@ -452,20 +451,8 @@ class MSATransformer(BaseProteinModel):
         max_seqlen: int = 1024,
     ):
         super().__init__(
-            vocab_size=vocab_size,
-            bos_idx=bos_idx,
-            eos_idx=eos_idx,
-            pad_idx=pad_idx,
-            mask_idx=mask_idx,
-            prepend_bos=prepend_bos,
-            append_eos=append_eos,
-            optimizer=optimizer,
-            learning_rate=learning_rate,
-            weight_decay=weight_decay,
-            lr_scheduler=lr_scheduler,
-            warmup_steps=warmup_steps,
-            adam_betas=adam_betas,
-            max_steps=max_steps,
+            vocab=vocab,
+            optimizer_config=optimizer_config,
             contact_train_data=contact_train_data,
         )
         self.embed_dim = embed_dim
@@ -478,7 +465,7 @@ class MSATransformer(BaseProteinModel):
         self.max_tokens_per_msa = max_tokens_per_msa
 
         self.embed_tokens = nn.Embedding(
-            self.alphabet_size, embed_dim, padding_idx=self.pad_idx
+            len(vocab), embed_dim, padding_idx=vocab.pad_idx
         )
 
         if embed_positions_msa:
@@ -507,21 +494,21 @@ class MSATransformer(BaseProteinModel):
 
         self.contact_head = ContactPredictionHead(
             num_layers * num_attention_heads,
-            self.prepend_bos,
-            self.append_eos,
-            eos_idx=self.eos_idx,
+            vocab.prepend_bos,
+            vocab.append_eos,
+            eos_idx=vocab.eos_idx,
         )
         self.contact_head.requires_grad_(False)
         self.embed_positions = LearnedPositionalEmbedding(
             max_seqlen,
             embed_dim,
-            self.pad_idx,
+            vocab.pad_idx,
         )
         self.emb_layer_norm_before = nn.LayerNorm(embed_dim)
         self.emb_layer_norm_after = nn.LayerNorm(embed_dim)
         self.lm_head = RobertaLMHead(
             embed_dim=embed_dim,
-            output_dim=self.alphabet_size,
+            output_dim=len(self.vocab),
             weight=self.embed_tokens.weight,
         )
 
@@ -633,13 +620,7 @@ class MSATransformer(BaseProteinModel):
         args = esm_model.args
         vocab = Vocab.from_esm_alphabet(alphabet)
         model = cls(
-            vocab_size=len(vocab),  # can be off b/c of null token
-            bos_idx=vocab.bos_idx,
-            eos_idx=vocab.eos_idx,
-            pad_idx=vocab.pad_idx,
-            mask_idx=vocab.mask_idx,
-            prepend_bos=vocab.prepend_bos,
-            append_eos=vocab.append_eos,
+            vocab=vocab,
             embed_dim=args.embed_dim,
             num_attention_heads=args.attention_heads,
             num_layers=args.layers,

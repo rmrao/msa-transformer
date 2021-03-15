@@ -86,11 +86,27 @@ class TransformerLayer(nn.Module):
 class PKMLayer(nn.Module):
     """Transformer layer block."""
 
-    def __init__(self, embed_dim, ffn_embed_dim, attention_heads):
+    def __init__(
+        self,
+        embed_dim: int,
+        ffn_embed_dim: int,
+        attention_heads: int,
+        pkm_attention_heads: int,
+        pkm_dim_head: int,
+        num_product_keys: int = 128,
+        pkm_topk: int = 32,
+        dropout: float = 0.1,
+        attention_dropout: float = 0.1,
+        activation_dropout: float = 0.1,
+    ):
         super().__init__()
         self.embed_dim = embed_dim
         self.ffn_embed_dim = ffn_embed_dim
         self.attention_heads = attention_heads
+        self.pkm_attention_heads = pkm_attention_heads
+        self.num_product_keys = num_product_keys
+        self.pkm_topk = pkm_topk
+        self.pkm_dim_head = pkm_dim_head
 
         self.self_attn = MultiheadAttention(
             self.embed_dim,
@@ -130,8 +146,7 @@ class PKMLayer(nn.Module):
 
         residual = x
         x = self.final_layer_norm(x)
-        x = gelu(self.fc1(x))
-        x = self.fc2(x)
+        x = self.pkm(x)
         x = residual + x
 
         return x, attn

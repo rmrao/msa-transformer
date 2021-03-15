@@ -1,4 +1,4 @@
-from typing import Optional, List, Any, Tuple
+from typing import Optional, List, Any
 import sys
 from pathlib import Path
 import logging
@@ -12,7 +12,7 @@ from evo.dataset import (
     BatchBySequenceLength,
 )
 from evo.tokenization import Vocab
-from model import ESM1b
+from model import ESM1b, TransformerConfig, OptimizerConfig
 from dataset import TRRosettaContactDataset
 from dataclasses import dataclass, field
 import hydra
@@ -43,12 +43,6 @@ class DataConfig:
 
 @dataclass
 class TrainConfig:
-    learning_rate: float = 1e-4
-    optimizer: str = "adam"
-    weight_decay: float = 1e-4
-    lr_scheduler: str = "warmup_linear"
-    warmup_steps: int = 16000
-    max_seqlen: int = 1024
     max_tokens: int = 2 ** 17
     valid_batch_size: int = 2
     accumulate_grad_batches: int = 1
@@ -56,31 +50,12 @@ class TrainConfig:
     gpus: int = 1
     gradient_clip_val: float = 1.0
     max_epochs: int = 1000
-    adam_betas: Tuple[float, float] = (0.9, 0.999)
-    max_steps: int = 1000000
     num_nodes: int = 1
     precision: int = 32
     patience: int = 10
     mask_prob: float = 0.15
     random_token_prob: float = 0.1
     leave_unmasked_prob: float = 0.1
-
-
-@dataclass
-class ESM1bModelConfig:
-    embed_dim: int = 1280
-    num_attention_heads: int = 20
-    num_layers: int = 33
-    dropout: float = 0.1
-    attention_dropout: float = 0.1
-    activation_dropout: float = 0.1
-
-
-@dataclass
-class ESM1bSmallModelConfig(ESM1bModelConfig):
-    embed_dim: int = 768
-    num_attention_heads: int = 12
-    num_layers: int = 12
 
 
 @dataclass
@@ -100,7 +75,8 @@ class Config:
 
     data: DataConfig = DataConfig()
     train: TrainConfig = TrainConfig()
-    model: ESM1bModelConfig = ESM1bSmallModelConfig()
+    model: TransformerConfig = TransformerConfig()
+    optimizer: OptimizerConfig = OptimizerConfig()
     logging: LoggingConfig = LoggingConfig()
     fast_dev_run: bool = False
     resume_from_checkpoint: Optional[str] = None
@@ -111,8 +87,8 @@ cs = ConfigStore.instance()
 cs.store(name="config", node=Config)
 cs.store(group="data", name="default", node=DataConfig)
 cs.store(group="train", name="default", node=TrainConfig)
-cs.store(group="model", name="esm1b-small", node=ESM1bSmallModelConfig)
-cs.store(group="model", name="esm1b", node=ESM1bModelConfig)
+cs.store(group="model", name="default", node=TransformerConfig)
+cs.store(group="optimizer", name="default", node=OptimizerConfig)
 cs.store(group="logging", name="default", node=LoggingConfig)
 
 
@@ -121,7 +97,7 @@ def train(cfg: Config) -> None:
     alphabet = esm.data.Alphabet.from_architecture("ESM-1b")
     vocab = Vocab.from_esm_alphabet(alphabet)
     train_data = EncodedFastaDataset(cfg.data.fasta_path, vocab)
-    train_data = RandomCropDataset(train_data, cfg.train.max_seqlen)
+    train_data = RandomCropDataset(train_data, cfg.model.max_seqlen)
     train_data = MaskedTokenWrapperDataset(
         train_data,
         cfg.train.mask_prob,
@@ -164,27 +140,9 @@ def train(cfg: Config) -> None:
     )
 
     model = ESM1b(
-        vocab_size=len(vocab),
-        bos_idx=vocab.bos_idx,
-        eos_idx=vocab.eos_idx,
-        pad_idx=vocab.pad_idx,
-        mask_idx=vocab.mask_idx,
-        prepend_bos=vocab.prepend_bos,
-        append_eos=vocab.append_eos,
-        embed_dim=cfg.model.embed_dim,
-        num_attention_heads=cfg.model.num_attention_heads,
-        num_layers=cfg.model.num_layers,
-        dropout=cfg.model.dropout,
-        attention_dropout=cfg.model.attention_dropout,
-        activation_dropout=cfg.model.activation_dropout,
-        max_seqlen=cfg.train.max_seqlen,
-        optimizer=cfg.train.optimizer,
-        learning_rate=cfg.train.learning_rate,
-        weight_decay=cfg.train.weight_decay,
-        lr_scheduler=cfg.train.lr_scheduler,
-        warmup_steps=cfg.train.warmup_steps,
-        max_steps=cfg.train.max_steps,
-        adam_betas=cfg.train.adam_betas,
+        vocab=vocab,
+        model_config=cfg.model,
+        optimizer_config=cfg.optimizer,
         contact_train_data=trrosetta_train_data,
     )
 
@@ -222,7 +180,7 @@ def train(cfg: Config) -> None:
         gradient_clip_val=cfg.train.gradient_clip_val,
         log_every_n_steps=cfg.logging.log_every_n_steps,
         max_epochs=cfg.train.max_epochs,
-        max_steps=cfg.train.max_steps,
+        max_steps=cfg.optimizer.max_steps,
         num_nodes=cfg.train.num_nodes,
         precision=cfg.train.precision,
         progress_bar_refresh_rate=cfg.logging.progress_bar_refresh_rate,

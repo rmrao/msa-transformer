@@ -56,10 +56,12 @@ class PKM(nn.Module):
 
     def init_weights(self):
         nn.init.normal_(self.keys, std=1 / self.keys.size(-1))
-        nn.init.normal_(self.values, std=1 / math.sqrt(self.values.weight.size(-1)))
+        nn.init.normal_(
+            self.values.weight, std=1 / math.sqrt(self.values.weight.size(-1))
+        )
 
     def forward(self, x, input_mask=None, **kwargs):
-        b, t, e = x.shape
+        t, b, e = x.shape
         h = self.heads
         x = self.input_dropout(x)
 
@@ -68,14 +70,14 @@ class PKM(nn.Module):
         queries = self.query_dropout(queries)
 
         queries = queries.chunk(2, dim=-1)
-        queries = torch.stack(queries).reshape(2, b, t, h, -1)
+        queries = torch.stack(queries).reshape(2, t, b, h, -1)
 
-        dots = torch.einsum("pbthd,hnpd->bthpn", queries, self.keys)
+        dots = torch.einsum("ptbhd,hnpd->tbhpn", queries, self.keys)
         scores, indices = dots.topk(k=self.topk, dim=-1)
         scores, indices = map(lambda x: x.chunk(2, dim=3), (scores, indices))
 
         all_topk = self.topk ** 2
-        shape = (b, t, h, all_topk)
+        shape = (t, b, h, all_topk)
 
         all_scores = (scores[0][..., :, None] + scores[1][..., None, :]).reshape(*shape)
 
@@ -94,4 +96,4 @@ class PKM(nn.Module):
 
         out = self.values(value_indices, per_sample_weights=attn)
         out = self.value_dropout(out)
-        return out.reshape(b, t, e)
+        return out.reshape(t, b, e)
