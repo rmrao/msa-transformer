@@ -54,6 +54,8 @@ class TransformerLayerConfig:
     dropout: float = 0.1
     attention_dropout: float = 0.1
     activation_dropout: float = 0.1
+    attention_type: str = "standard"
+    performer_attention_features: int = 256
 
 
 @dataclass
@@ -314,6 +316,8 @@ class ESM1b(BaseProteinModel):
             dropout=config.dropout,
             attention_dropout=config.attention_dropout,
             activation_dropout=config.activation_dropout,
+            attention_type=config.attention_type,
+            performer_attention_features=config.performer_attention_features,
         )
 
     def build_pkm_layer(self) -> PKMLayer:
@@ -329,6 +333,8 @@ class ESM1b(BaseProteinModel):
             dropout=config.dropout,
             attention_dropout=config.attention_dropout,
             activation_dropout=config.activation_dropout,
+            attention_type=config.attention_type,
+            performer_attention_features=config.performer_attention_features,
         )
 
     def build_lm_head(self, weight: torch.Tensor) -> RobertaLMHead:

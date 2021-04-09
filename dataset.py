@@ -54,6 +54,14 @@ class TRRosettaContactDataset(CollatableVocabDataset):
 
         assert len(self.a3m_data) == len(self.npz_data)
 
+    def get(self, key: str):
+        msa = self.a3m_data.get(key)
+        tokens = torch.from_numpy(self.vocab.encode(msa))
+        distogram = self.npz_data.get(key)["dist6d"]
+        contacts = (distogram > 0) & (distogram < 8)
+        contacts = torch.from_numpy(contacts)
+        return tokens, contacts
+
     def __len__(self) -> int:
         return len(self.a3m_data)
 

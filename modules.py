@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from evo.tensor import symmetrize, apc
 from product_key_memory import PKM
+from functools import partial
 
 
 def gelu(x):
@@ -30,26 +31,44 @@ class TransformerLayer(nn.Module):
         dropout: float = 0.1,
         attention_dropout: float = 0.1,
         activation_dropout: float = 0.1,
+        attention_type: str = "standard",
+        performer_attention_features: int = 256,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.ffn_embed_dim = ffn_embed_dim
         self.attention_heads = attention_heads
+        self.attention_type = attention_type
+        self.attention_dropout = attention_dropout
+        self.performer_attention_features = performer_attention_features
 
         self.dropout = nn.Dropout(dropout)
         self.activation_dropout = nn.Dropout(activation_dropout)
 
-        self.self_attn = MultiheadAttention(
-            self.embed_dim,
-            self.attention_heads,
-            dropout=attention_dropout,
-        )
+        self.self_attn = self.build_self_attention()
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
 
         self.fc1 = nn.Linear(self.embed_dim, self.ffn_embed_dim)
         self.fc2 = nn.Linear(self.ffn_embed_dim, self.embed_dim)
 
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
+
+    def build_self_attention(self):
+        if self.attention_type == "standard":
+            return MultiheadAttention(
+                self.embed_dim,
+                self.attention_heads,
+                dropout=self.attention_dropout,
+            )
+        elif self.attention_type == "performer":
+            return PerformerAttention(
+                self.embed_dim,
+                self.attention_heads,
+                num_features=self.performer_attention_features,
+                dropout=self.attention_dropout,
+            )
+        else:
+            raise ValueError(f"Unrecognized attention type {self.attention_type}")
 
     def forward(
         self,
@@ -61,11 +80,9 @@ class TransformerLayer(nn.Module):
         residual = x
         x = self.self_attn_layer_norm(x)
         x, attn = self.self_attn(
-            query=x,
-            key=x,
-            value=x,
+            x,
             key_padding_mask=self_attn_padding_mask,
-            need_weights=True,
+            need_weights=need_head_weights,
             need_head_weights=need_head_weights,
             attn_mask=self_attn_mask,
         )
@@ -98,6 +115,8 @@ class PKMLayer(nn.Module):
         dropout: float = 0.1,
         attention_dropout: float = 0.1,
         activation_dropout: float = 0.1,
+        attention_type: str = "standard",
+        performer_attention_features: int = 256,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -107,11 +126,11 @@ class PKMLayer(nn.Module):
         self.num_product_keys = num_product_keys
         self.pkm_topk = pkm_topk
         self.pkm_dim_head = pkm_dim_head
+        self.attention_type = attention_type
+        self.attention_dropout = attention_dropout
+        self.performer_attention_features = performer_attention_features
 
-        self.self_attn = MultiheadAttention(
-            self.embed_dim,
-            self.attention_heads,
-        )
+        self.self_attn = self.build_self_attention()
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
 
         self.pkm = PKM(
@@ -123,6 +142,23 @@ class PKMLayer(nn.Module):
         )
 
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
+
+    def build_self_attention(self):
+        if self.attention_type == "standard":
+            return MultiheadAttention(
+                self.embed_dim,
+                self.attention_heads,
+                dropout=self.attention_dropout,
+            )
+        elif self.attention_type == "performer":
+            return PerformerAttention(
+                self.embed_dim,
+                self.attention_heads,
+                num_features=self.performer_attention_features,
+                dropout=self.attention_dropout,
+            )
+        else:
+            raise ValueError(f"Unrecognized attention type {self.attention_type}")
 
     def forward(
         self,
@@ -399,10 +435,10 @@ class MultiheadAttention(nn.Module):
 
     def __init__(
         self,
-        embed_dim,
-        num_heads,
-        dropout=0.0,
-        bias=True,
+        embed_dim: int,
+        num_heads: int,
+        dropout: float = 0.0,
+        bias: bool = True,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -423,6 +459,26 @@ class MultiheadAttention(nn.Module):
 
         self.reset_parameters()
         self.enable_torch_version = hasattr(F, "multi_head_attention_forward")
+        if self.enable_torch_version:
+            self.attn_fn = partial(
+                F.multi_head_attention_forward,  # type: ignore
+                embed_dim_to_check=self.embed_dim,
+                num_heads=self.num_heads,
+                in_proj_weight=torch.empty([0]),
+                in_proj_bias=torch.cat(
+                    (self.q_proj.bias, self.k_proj.bias, self.v_proj.bias)
+                ),
+                bias_k=None,
+                bias_v=None,
+                add_zero_attn=False,
+                dropout_p=self.dropout,
+                out_proj_weight=self.out_proj.weight,
+                out_proj_bias=self.out_proj.bias,
+                use_separate_proj_weight=True,
+                q_proj_weight=self.q_proj.weight,
+                k_proj_weight=self.k_proj.weight,
+                v_proj_weight=self.v_proj.weight,
+            )
 
     def reset_parameters(self):
         # Empirically observed the convergence to be much better with
@@ -437,13 +493,10 @@ class MultiheadAttention(nn.Module):
 
     def forward(
         self,
-        query,
-        key: Optional[torch.Tensor],
-        value: Optional[torch.Tensor],
+        x: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
-        need_weights: bool = True,
+        need_weights: bool = False,
         attn_mask: Optional[torch.Tensor] = None,
-        before_softmax: bool = False,
         need_head_weights: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Input shape: Time x Batch x Channel
@@ -466,9 +519,8 @@ class MultiheadAttention(nn.Module):
         if need_head_weights:
             need_weights = True
 
-        tgt_len, bsz, embed_dim = query.size()
+        tgt_len, bsz, embed_dim = x.size()
         assert embed_dim == self.embed_dim
-        assert list(query.size()) == [tgt_len, bsz, embed_dim]
 
         if (
             self.enable_torch_version
@@ -477,34 +529,19 @@ class MultiheadAttention(nn.Module):
             and not torch.jit.is_scripting()
             and not need_head_weights
         ):
-            assert key is not None and value is not None
-            return F.multi_head_attention_forward(  # type: ignore
-                query,
-                key,
-                value,
-                self.embed_dim,
-                self.num_heads,
-                torch.empty([0]),
-                torch.cat((self.q_proj.bias, self.k_proj.bias, self.v_proj.bias)),
-                None,
-                None,
-                False,
-                self.dropout,
-                self.out_proj.weight,
-                self.out_proj.bias,
-                self.training,
-                key_padding_mask,
-                need_weights,
-                attn_mask,
-                use_separate_proj_weight=True,
-                q_proj_weight=self.q_proj.weight,
-                k_proj_weight=self.k_proj.weight,
-                v_proj_weight=self.v_proj.weight,
+            return self.attn_fn(
+                query=x,
+                key=x,
+                value=x,
+                training=self.training,
+                key_padding_mask=key_padding_mask,
+                need_weights=need_weights,
+                attn_mask=attn_mask,
             )
 
-        q = self.q_proj(query)
-        k = self.k_proj(query)
-        v = self.v_proj(query)
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
         q *= self.scaling
 
         q = (
@@ -544,9 +581,6 @@ class MultiheadAttention(nn.Module):
             )
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
-        if before_softmax:
-            return attn_weights, v
-
         attn_weights_float = F.softmax(
             attn_weights, dim=-1, dtype=torch.float32  # type: ignore
         )
@@ -569,6 +603,57 @@ class MultiheadAttention(nn.Module):
             if not need_head_weights:
                 # average attention weights over heads
                 attn_weights = attn_weights.mean(dim=0)
+
+        return attn, attn_weights
+
+
+class PerformerAttention(MultiheadAttention):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        num_features: int,
+        dropout: float = 0.0,
+        bias: bool = True,
+    ):
+        from performer_pytorch import FastAttention
+
+        super().__init__(embed_dim, num_heads, dropout, bias)
+        self.attn_fn = FastAttention(dim_heads=self.head_dim, nb_features=num_features)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+        need_weights: bool = False,
+        attn_mask: Optional[torch.Tensor] = None,
+        need_head_weights: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        from einops import rearrange
+
+        seqlen, bsz, embed_dim = x.size()
+
+        q = self.q_proj(x)  # [T x B x D]
+        k = self.k_proj(x)  # [...]
+        v = self.v_proj(x)  # [...]
+
+        q, k, v = map(
+            lambda t: rearrange(t, "t b (h d) -> b h t d", h=self.num_heads), (q, k, v)
+        )
+        if attn_mask is not None:
+            v.masked_fill_(attn_mask, 0)
+
+        attn = self.attn_fn(q, k, v)
+
+        if need_weights or need_head_weights:
+            v_pos = torch.eye(seqlen, dtype=v.dtype, device=v.device)[
+                None, None
+            ].repeat(bsz, self.num_heads, 1, 1)
+            attn_weights = self.attn_fn(q, k, v_pos).transpose(1, 0)
+            if not need_head_weights:
+                attn_weights = attn_weights.mean(0)
+        else:
+            attn_weights = None
 
         return attn, attn_weights
 
