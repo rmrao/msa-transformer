@@ -149,8 +149,8 @@ class BaseProteinModel(pl.LightningModule, ABC):
             for tokens, contacts in iterable:
                 tokens = tokens.unsqueeze(0)
                 attentions = self.get_sequence_attention(tokens)
-                start_idx = int(self.prepend_bos)
-                end_idx = attentions.size(-1) - int(self.append_eos)
+                start_idx = int(self.vocab.prepend_bos)
+                end_idx = attentions.size(-1) - int(self.vocab.append_eos)
                 attentions = attentions[..., start_idx:end_idx, start_idx:end_idx]
                 seqlen = attentions.size(-1)
                 attentions = symmetrize(attentions)
@@ -185,7 +185,7 @@ class BaseProteinModel(pl.LightningModule, ABC):
     def training_step(self, batch, batch_idx):
         src, tgt = batch
         logits = self(src)["logits"]
-        valid_mask = tgt != self.pad_idx
+        valid_mask = tgt != self.vocab.pad_idx
 
         logits = logits[valid_mask]
         tgt = tgt[valid_mask]
@@ -234,9 +234,9 @@ class BaseProteinModel(pl.LightningModule, ABC):
                 decay_params.append(param)
 
         optimizer_grouped_parameters = [
-            {"params": decay_params, "weight_decay": self.weight_decay},
+            {"params": decay_params, "weight_decay": self.optimizer_config.weight_decay},
             {"params": no_decay_params, "weight_decay": 0.0},
-            {"params": pkm_params, "weight_decay": 0.0, "lr": 4 * self.learning_rate}
+            {"params": pkm_params, "weight_decay": 0.0, "lr": 4 * self.optimizer_config.learning_rate}
         ]
 
         if self.optimizer_config.name == "adam":
@@ -360,7 +360,7 @@ class ESM1b(BaseProteinModel):
         if return_contacts:
             need_head_weights = True
         assert tokens.ndim == 2
-        padding_mask = tokens.eq(self.pad_idx)  # B, T
+        padding_mask = tokens.eq(self.vocab.pad_idx)  # B, T
 
         x = self.embed_tokens(tokens)
 
@@ -539,7 +539,7 @@ class MSATransformer(BaseProteinModel):
 
         assert tokens.ndim == 3
         batch_size, num_alignments, seqlen = tokens.size()
-        padding_mask = tokens.eq(self.pad_idx)  # B, R, C
+        padding_mask = tokens.eq(self.vocab.pad_idx)  # B, R, C
         if not padding_mask.any():
             padding_mask = None
 

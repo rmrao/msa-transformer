@@ -35,7 +35,7 @@ current_directory = Path(__file__).parent.absolute()
 @dataclass
 class DataConfig:
     fasta_path: str = str(current_directory / "data/trrosetta.fasta")
-    trrosetta_path: str = str(current_directory / "data")
+    trrosetta_path: str = str(current_directory / "data" / "trrosetta")
     trrosetta_train_split: str = "valid_train.txt"
     trrosetta_valid_split: str = "valid_test.txt"
     num_workers: int = 3
@@ -43,7 +43,7 @@ class DataConfig:
 
 @dataclass
 class TrainConfig:
-    max_tokens: int = 2 ** 17
+    max_tokens: int = 2 ** 13
     valid_batch_size: int = 2
     accumulate_grad_batches: int = 1
     distributed_backend: Optional[str] = None
@@ -66,12 +66,9 @@ class LoggingConfig:
     track_grad_norm: bool = False
 
 
-defaults = [{"model": "esm1b-small"}]
-
-
 @dataclass
 class Config:
-    defaults: List[Any] = field(default_factory=lambda: defaults)
+    # defaults: List[Any] = field(default_factory=lambda: defaults)
 
     data: DataConfig = DataConfig()
     train: TrainConfig = TrainConfig()
@@ -156,6 +153,7 @@ def train(cfg: Config) -> None:
     if isinstance(logger, pl.loggers.LightningLoggerBase):
         logger.log_hyperparams(cfg.train)  # type: ignore
         logger.log_hyperparams(cfg.model)  # type: ignore
+        logger.log_hyperparams(cfg.optimizer)  # type: ignore
 
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor="valid/Long Range P@L",
