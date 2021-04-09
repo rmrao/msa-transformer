@@ -460,25 +460,44 @@ class MultiheadAttention(nn.Module):
         self.reset_parameters()
         self.enable_torch_version = hasattr(F, "multi_head_attention_forward")
         if self.enable_torch_version:
-            self.attn_fn = partial(
+            self._attn_fn = partial(
                 F.multi_head_attention_forward,  # type: ignore
                 embed_dim_to_check=self.embed_dim,
                 num_heads=self.num_heads,
                 in_proj_weight=torch.empty([0]),
-                in_proj_bias=torch.cat(
-                    (self.q_proj.bias, self.k_proj.bias, self.v_proj.bias)
-                ),
                 bias_k=None,
                 bias_v=None,
                 add_zero_attn=False,
                 dropout_p=self.dropout,
-                out_proj_weight=self.out_proj.weight,
-                out_proj_bias=self.out_proj.bias,
                 use_separate_proj_weight=True,
-                q_proj_weight=self.q_proj.weight,
-                k_proj_weight=self.k_proj.weight,
-                v_proj_weight=self.v_proj.weight,
             )
+
+    def attn_fn(
+        self,
+        query,
+        key,
+        value,
+        key_padding_mask: Optional[torch.Tensor] = None,
+        need_weights: bool = False,
+        attn_mask: Optional[torch.Tensor] = None,
+    ):
+        return self._attn_fn(
+            query,
+            key,
+            value,
+            in_proj_bias=torch.cat(
+                (self.q_proj.bias, self.k_proj.bias, self.v_proj.bias)
+            ),
+            training=self.training,
+            key_padding_mask=key_padding_mask,
+            need_weights=need_weights,
+            attn_mask=attn_mask,
+            out_proj_weight=self.out_proj.weight,
+            out_proj_bias=self.out_proj.bias,
+            q_proj_weight=self.q_proj.weight,
+            k_proj_weight=self.k_proj.weight,
+            v_proj_weight=self.v_proj.weight,
+        )
 
     def reset_parameters(self):
         # Empirically observed the convergence to be much better with
@@ -533,7 +552,6 @@ class MultiheadAttention(nn.Module):
                 query=x,
                 key=x,
                 value=x,
-                training=self.training,
                 key_padding_mask=key_padding_mask,
                 need_weights=need_weights,
                 attn_mask=attn_mask,
@@ -619,7 +637,10 @@ class PerformerAttention(MultiheadAttention):
         from performer_pytorch import FastAttention
 
         super().__init__(embed_dim, num_heads, dropout, bias)
-        self.attn_fn = FastAttention(dim_heads=self.head_dim, nb_features=num_features)
+        self._attn_fn = FastAttention(dim_heads=self.head_dim, nb_features=num_features)
+
+    def attn_fn(self, query, key, value):
+        return self._attn_fn(query, key, value)
 
     def forward(
         self,
@@ -640,10 +661,15 @@ class PerformerAttention(MultiheadAttention):
         q, k, v = map(
             lambda t: rearrange(t, "t b (h d) -> b h t d", h=self.num_heads), (q, k, v)
         )
+
+        if key_padding_mask is not None:
+            mask = key_padding_mask[:, None, :, None]
+            v.masked_fill_(mask, 0)
         if attn_mask is not None:
-            v.masked_fill_(attn_mask, 0)
+            raise NotImplementedError
 
         attn = self.attn_fn(q, k, v)
+        attn = rearrange(attn, "b h t d -> t b (h d)")
 
         if need_weights or need_head_weights:
             v_pos = torch.eye(seqlen, dtype=v.dtype, device=v.device)[

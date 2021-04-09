@@ -397,7 +397,6 @@ class ESM1b(BaseProteinModel):
             if need_head_weights:
                 # (H, B, T, T) => (B, H, T, T)
                 attn_weights.append(attn.transpose(1, 0))
-
         x = self.emb_layer_norm_after(x)
         x = x.transpose(0, 1)  # (T, B, E) => (B, T, E)
 
