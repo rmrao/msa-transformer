@@ -1,4 +1,3 @@
-torch
 pytorch_lightning
 numpy
 hydra-core
