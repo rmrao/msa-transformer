@@ -670,6 +670,7 @@ class PerformerAttention(MultiheadAttention):
 
         attn = self.attn_fn(q, k, v)
         attn = rearrange(attn, "b h t d -> t b (h d)")
+        attn = self.out_proj(attn)
 
         if need_weights or need_head_weights:
             v_pos = torch.eye(seqlen, dtype=v.dtype, device=v.device)[

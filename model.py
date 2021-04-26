@@ -211,6 +211,7 @@ class BaseProteinModel(pl.LightningModule, ABC):
             key = f"valid/Long Range {key}"
             logger = self.metrics[key](value)
             self.log(key, logger, prog_bar=key.endswith("P@L"))
+        return metrics["P@L"]
 
     def configure_optimizers(self):
         no_decay = ["norm", "LayerNorm"]
