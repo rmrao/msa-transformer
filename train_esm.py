@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import logging
 import pytorch_lightning as pl
+from pytorch_lightning.plugins import DDPPlugin
 import torch
 import esm
 from evo.dataset import (
@@ -13,10 +14,12 @@ from evo.dataset import (
 )
 from evo.tokenization import Vocab
 from model import ESM1b, TransformerConfig, OptimizerConfig
-from dataset import TRRosettaContactDataset
+from dataset import TRRosettaContactDataset, EncodedFamilyFastaDataset, RandomCropFamilyDataset, MaskedTokenWrapperFamilyDataset
 from dataclasses import dataclass, field
 import hydra
 from hydra.core.config_store import ConfigStore
+import pandas as pd
+from esm import Alphabet
 
 
 root_logger = logging.getLogger()
@@ -93,9 +96,9 @@ cs.store(group="logging", name="default", node=LoggingConfig)
 def train(cfg: Config) -> None:
     alphabet = esm.data.Alphabet.from_architecture("ESM-1b")
     vocab = Vocab.from_esm_alphabet(alphabet)
-    train_data = EncodedFastaDataset(cfg.data.fasta_path, vocab)
-    train_data = RandomCropDataset(train_data, cfg.model.max_seqlen)
-    train_data = MaskedTokenWrapperDataset(
+    train_data = EncodedFamilyFastaDataset(cfg.data.fasta_path, vocab, "/home/arbaazm/pfam_project/tgt_name_to_coords.parquet", "/home/arbaazm/pfam_project/pfamAlphabet.npy")
+    train_data = RandomCropFamilyDataset(train_data, cfg.model.max_seqlen)
+    train_data = MaskedTokenWrapperFamilyDataset(
         train_data,
         cfg.train.mask_prob,
         cfg.train.random_token_prob,
@@ -118,6 +121,8 @@ def train(cfg: Config) -> None:
     trrosetta_train_data = TRRosettaContactDataset(
         cfg.data.trrosetta_path,
         vocab,
+        pfam_data_file="/home/arbaazm/pfam_project/trrosetta_tgt_name_to_coords.parquet",
+        pfam_alphabet_arr="/home/arbaazm/pfam_project/pfamAlphabet.npy",
         split_files=train_pdbs,
         max_seqs_per_msa=1,
     )
@@ -125,6 +130,8 @@ def train(cfg: Config) -> None:
     trrosetta_valid_data = TRRosettaContactDataset(
         cfg.data.trrosetta_path,
         vocab,
+        pfam_data_file="/home/arbaazm/pfam_project/trrosetta_tgt_name_to_coords.parquet",
+        pfam_alphabet_arr="/home/arbaazm/pfam_project/pfamAlphabet.npy",
         split_files=valid_pdbs,
         max_seqs_per_msa=1,
     )
@@ -138,6 +145,7 @@ def train(cfg: Config) -> None:
 
     model = ESM1b(
         vocab=vocab,
+        family_alphabet=train_data.family_alphabet,
         model_config=cfg.model,
         optimizer_config=cfg.optimizer,
         contact_train_data=trrosetta_train_data,

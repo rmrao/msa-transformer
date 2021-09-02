@@ -26,6 +26,7 @@ from product_key_memory import PKM
 
 import lr_schedulers
 from dataset import TRRosettaContactDataset
+import esm
 
 
 @dataclass
@@ -118,9 +119,9 @@ class BaseProteinModel(pl.LightningModule, ABC):
         y = []
         with torch.no_grad():
             iterable = data if not verbose else tqdm(data)
-            for tokens, contacts in iterable:
-                tokens = tokens.unsqueeze(0)
-                attentions = self.get_sequence_attention(tokens)
+            for tokens, contacts, fam_toks in iterable:
+                tokens, fam_toks = tokens.unsqueeze(0), fam_toks.unsqueeze(0)
+                attentions = self.get_sequence_attention((tokens,fam_toks))
                 start_idx = int(self.vocab.prepend_bos)
                 end_idx = attentions.size(-1) - int(self.vocab.append_eos)
                 attentions = attentions[..., start_idx:end_idx, start_idx:end_idx]
@@ -171,7 +172,7 @@ class BaseProteinModel(pl.LightningModule, ABC):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        predictions = self.predict_contacts(batch["src_tokens"])
+        predictions = self.predict_contacts((batch["src_tokens"], batch["family_tokens"]))
         metrics = compute_precisions(
             predictions,
             batch["tgt"],
@@ -245,6 +246,7 @@ class ESM1b(BaseProteinModel):
     def __init__(
         self,
         vocab: Vocab,
+        family_alphabet: esm.Alphabet,
         model_config: TransformerConfig = TransformerConfig(),
         optimizer_config: OptimizerConfig = OptimizerConfig(),
         contact_train_data: Optional[TRRosettaContactDataset] = None,
@@ -255,8 +257,10 @@ class ESM1b(BaseProteinModel):
             contact_train_data=contact_train_data,
         )
         self.model_config = model_config
+        self.family_alphabet = family_alphabet
 
         self.embed_tokens = self.build_embedding()
+        self.embed_family_tokens = self.build_family_embedding()
         self.dropout_layer = nn.Dropout(model_config.layer.dropout)
 
         self.layers = nn.ModuleList([])
@@ -284,6 +288,13 @@ class ESM1b(BaseProteinModel):
             len(self.vocab),
             self.model_config.layer.embed_dim,
             padding_idx=self.vocab.pad_idx,
+        )
+
+    def build_family_embedding(self) -> nn.Embedding:
+        return nn.Embedding(
+            len(self.family_alphabet),
+            self.model_config.layer.embed_dim,
+            padding_idx=0,
         )
 
     def build_transformer_layer(self) -> TransformerLayer:
@@ -336,12 +347,18 @@ class ESM1b(BaseProteinModel):
     def forward(
         self, tokens, repr_layers=[], need_head_weights=False, return_contacts=False
     ):
+        if not isinstance(tokens, tuple):
+            raise RuntimeError("forward argument isn't a tuple")
+
         if return_contacts:
             need_head_weights = True
+        
+        tokens, family_tokens = tokens[0], tokens[1]
         assert tokens.ndim == 2
         padding_mask = tokens.eq(self.vocab.pad_idx)  # B, T
 
-        x = self.embed_tokens(tokens)
+        family_embedding = self.embed_family_tokens(family_tokens)
+        x = self.embed_tokens(tokens) + torch.sum(family_embedding, dim=1)
 
         x = x + self.embed_positions(tokens)
 
@@ -402,7 +419,8 @@ class ESM1b(BaseProteinModel):
         return result
 
     def get_sequence_attention(self, tokens):
-        return self(tokens.to(device=self.device), need_head_weights=True)["attentions"]
+        tokens, family_tokens = tokens
+        return self((tokens.to(device=self.device), family_tokens.to(device=self.device)), need_head_weights=True)["attentions"]
 
     @classmethod
     def from_esm(
