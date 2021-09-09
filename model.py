@@ -186,25 +186,19 @@ class BaseProteinModel(pl.LightningModule, ABC):
     def training_step(self, batch, batch_idx):
         src, tgt = batch
         logits = self(src)["logits"]
-        print("done with forward pass in training step")
         valid_mask = tgt != self.vocab.pad_idx
 
         logits = logits[valid_mask]
         tgt = tgt[valid_mask]
-        print("about to calculate loss")
         loss = nn.CrossEntropyLoss(reduction="none")(logits, tgt)
-        print("done calculating loss")
         perplexity = loss.float().exp().mean()
-        print("perplexity calculated")
         loss = loss.mean()
 
         self.log("train/loss", loss)
         self.log("train/perplexity", perplexity, prog_bar=True)
-        print("training step func done")
         return loss
 
     def validation_step(self, batch, batch_idx):
-        print("In validation_step")
         predictions = self.predict_contacts((batch["src_tokens"], batch["family_tokens"]))
         metrics = compute_precisions(
             predictions,
@@ -217,7 +211,6 @@ class BaseProteinModel(pl.LightningModule, ABC):
             key = f"valid/Long Range {key}"
             logger = self.metrics[key](value)
             self.log(key, logger, prog_bar=key.endswith("P@L"))
-        print("done with validation step")
         return metrics["P@L"]
 
     def configure_optimizers(self):
@@ -380,22 +373,17 @@ class ESM1b(BaseProteinModel):
 
         if return_contacts:
             need_head_weights = True
-        
+
         tokens, family_tokens = tokens[0], tokens[1]
         assert tokens.ndim == 2
         padding_mask = tokens.eq(self.vocab.pad_idx)  # B, T
-        print("About to embed family tokens")
         family_embedding = self.embed_family_tokens(family_tokens)
-        print("Successfully embedded family tokens")
         x = self.embed_tokens(tokens) + torch.sum(family_embedding, dim=1)
-        print("Added reduced family embedded tokens")
 
         x = x + self.embed_positions(tokens)
-        print("positional embedding done")
 
         x = self.emb_layer_norm_before(x)
         x = self.dropout_layer(x)
-        print("Dropout performed")
 
         if padding_mask is not None:
             x = x * (1 - padding_mask.unsqueeze(-1).type_as(x))
@@ -414,7 +402,6 @@ class ESM1b(BaseProteinModel):
         if not padding_mask.any():
             padding_mask = None
 
-        print("Approaching layer loop")
         for layer_idx, layer in enumerate(self.layers):
             x, attn = layer(
                 x,
@@ -426,9 +413,7 @@ class ESM1b(BaseProteinModel):
             if need_head_weights:
                 # (H, B, T, T) => (B, H, T, T)
                 attn_weights.append(attn.transpose(1, 0))
-        print("Done with layer loop")
         x = self.emb_layer_norm_after(x)
-        print("Done with emb layer norm after")
         x = x.transpose(0, 1)  # (T, B, E) => (B, T, E)
 
         # last hidden representation should have layer norm applied
@@ -438,7 +423,6 @@ class ESM1b(BaseProteinModel):
 
         result = {"logits": x, "representations": hidden_representations}
         if need_head_weights:
-            print("Starting need head weights process")
             # attentions: B x L x H x T x T
             attentions = torch.stack(attn_weights, 1)
             if padding_mask is not None:
@@ -449,11 +433,8 @@ class ESM1b(BaseProteinModel):
                 attentions = attentions * attention_mask[:, None, None, :, :]
             result["attentions"] = attentions
             if return_contacts:
-                print("in return contacts")
                 contacts = self.contact_head(tokens, attentions)
                 result["contacts"] = contacts
-                print("done with return contacts")
-        print("done with need head weights")
 
         return result
 
