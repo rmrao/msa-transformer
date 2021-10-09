@@ -28,25 +28,6 @@ import lr_schedulers
 from dataset import TRRosettaContactDataset
 
 
-class Average(pl.metrics.Metric):
-    def __init__(self, dist_sync_on_step=False):
-        super().__init__(dist_sync_on_step=dist_sync_on_step)
-
-        self.add_state(
-            "total", default=torch.tensor(0, dtype=torch.float), dist_reduce_fx="sum"
-        )
-        self.add_state(
-            "samples", default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum"
-        )
-
-    def update(self, values: torch.Tensor):  # type: ignore
-        self.total += values.sum().float()
-        self.samples += values.numel()  # type: ignore
-
-    def compute(self):
-        return self.total / self.samples
-
-
 @dataclass
 class TransformerLayerConfig:
     embed_dim: int = 768
@@ -96,15 +77,6 @@ class BaseProteinModel(pl.LightningModule, ABC):
         self.vocab = vocab
         self.optimizer_config = optimizer_config
         self.contact_train_data = contact_train_data
-
-        self.metrics = nn.ModuleDict(
-            {
-                "valid/Long Range AUC": Average(),
-                "valid/Long Range P@L": Average(),
-                "valid/Long Range P@L2": Average(),
-                "valid/Long Range P@L5": Average(),
-            }
-        )
 
     @abstractmethod
     def forward(
@@ -209,8 +181,7 @@ class BaseProteinModel(pl.LightningModule, ABC):
 
         for key, value in metrics.items():
             key = f"valid/Long Range {key}"
-            logger = self.metrics[key](value)
-            self.log(key, logger, prog_bar=key.endswith("P@L"))
+            self.log(key, value, prog_bar=key.endswith("P@L"))
         return metrics["P@L"]
 
     def configure_optimizers(self):
@@ -235,9 +206,16 @@ class BaseProteinModel(pl.LightningModule, ABC):
                 decay_params.append(param)
 
         optimizer_grouped_parameters = [
-            {"params": decay_params, "weight_decay": self.optimizer_config.weight_decay},
+            {
+                "params": decay_params,
+                "weight_decay": self.optimizer_config.weight_decay,
+            },
             {"params": no_decay_params, "weight_decay": 0.0},
-            {"params": pkm_params, "weight_decay": 0.0, "lr": 4 * self.optimizer_config.learning_rate}
+            {
+                "params": pkm_params,
+                "weight_decay": 0.0,
+                "lr": 4 * self.optimizer_config.learning_rate,
+            },
         ]
 
         if self.optimizer_config.name == "adam":
@@ -379,7 +357,7 @@ class ESM1b(BaseProteinModel):
             hidden_representations[0] = x
 
         if need_head_weights:
-            attn_weights = []
+            attentions = []
 
         # (B, T, E) => (T, B, E)
         x = x.transpose(0, 1)
@@ -397,7 +375,7 @@ class ESM1b(BaseProteinModel):
                 hidden_representations[layer_idx + 1] = x.transpose(0, 1)
             if need_head_weights:
                 # (H, B, T, T) => (B, H, T, T)
-                attn_weights.append(attn.transpose(1, 0))
+                attentions.append(attn.transpose(1, 0))
         x = self.emb_layer_norm_after(x)
         x = x.transpose(0, 1)  # (T, B, E) => (B, T, E)
 
@@ -409,7 +387,7 @@ class ESM1b(BaseProteinModel):
         result = {"logits": x, "representations": hidden_representations}
         if need_head_weights:
             # attentions: B x L x H x T x T
-            attentions = torch.stack(attn_weights, 1)
+            attentions = torch.stack(attentions, 1)
             if padding_mask is not None:
                 attention_mask = 1 - padding_mask.type_as(attentions)
                 attention_mask = attention_mask.unsqueeze(1) * attention_mask.unsqueeze(
@@ -427,7 +405,11 @@ class ESM1b(BaseProteinModel):
         return self(tokens.to(device=self.device), need_head_weights=True)["attentions"]
 
     @classmethod
-    def from_esm(cls):
+    def from_esm(
+        cls,
+        optimizer_config: OptimizerConfig = OptimizerConfig(),
+        contact_train_data: Optional[TRRosettaContactDataset] = None,
+    ):
         import esm
         from evo.tokenization import Vocab
 
@@ -446,7 +428,12 @@ class ESM1b(BaseProteinModel):
             num_layers=args.layers,
         )
 
-        model = cls(vocab=vocab, model_config=model_config)
+        model = cls(
+            vocab=vocab,
+            model_config=model_config,
+            optimizer_config=optimizer_config,
+            contact_train_data=contact_train_data,
+        )
         model.load_state_dict(esm_model.state_dict())
         return model
 

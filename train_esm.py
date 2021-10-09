@@ -46,7 +46,7 @@ class TrainConfig:
     max_tokens: int = 2 ** 13
     valid_batch_size: int = 2
     accumulate_grad_batches: int = 1
-    distributed_backend: Optional[str] = None
+    accelerator: Optional[str] = None
     gpus: int = 1
     gradient_clip_val: float = 1.0
     max_epochs: int = 1000
@@ -169,10 +169,9 @@ def train(cfg: Config) -> None:
 
     trainer = pl.Trainer(
         logger=logger,
-        checkpoint_callback=checkpoint_callback,
-        callbacks=[early_stopping_callback, lr_logger],
+        callbacks=[early_stopping_callback, lr_logger, checkpoint_callback],
         accumulate_grad_batches=cfg.train.accumulate_grad_batches,
-        distributed_backend=cfg.train.distributed_backend,
+        accelerator=cfg.train.accelerator,
         fast_dev_run=cfg.fast_dev_run,
         gpus=cfg.train.gpus,
         gradient_clip_val=cfg.train.gradient_clip_val,
@@ -186,9 +185,10 @@ def train(cfg: Config) -> None:
         track_grad_norm=cfg.logging.track_grad_norm,
         val_check_interval=cfg.val_check_interval * cfg.train.accumulate_grad_batches,
         replace_sampler_ddp=False,
+        plugins=[pl.plugins.DDPPlugin(find_unused_parameters=False)],
     )
 
-    trainer.fit(model, train_dataloader=train_loader, val_dataloaders=valid_loader)
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
 
 
 if __name__ == "__main__":
