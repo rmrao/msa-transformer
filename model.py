@@ -381,6 +381,7 @@ class ESM1b(BaseProteinModel):
         tokens, family_tokens = tokens[0], tokens[1]
         assert tokens.ndim == 2
         padding_mask = tokens.eq(self.vocab.pad_idx)  # B, T
+
         if self.add_pfam_data:
             family_embedding = self.embed_family_tokens(family_tokens.reshape(-1, family_tokens.shape[1])).reshape((tokens.shape[0], tokens.shape[1], self.model_config.layer.embed_dim))
             embedded_tokens = self.embed_tokens(tokens)

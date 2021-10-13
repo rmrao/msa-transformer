@@ -57,7 +57,7 @@ class TRRosettaContactDataset(CollatableVocabDataset):
 
         self.pfam_data_file = pfam_data_file
         self.pfam_df = pd.read_parquet(pfam_data_file)
-        self.family_alphabet = esm.Alphabet(np.load(pfam_alphabet_arr, allow_pickle=True), 
+        self.family_alphabet = esm.Alphabet(np.load(pfam_alphabet_arr, allow_pickle=True),
                                             prepend_toks = ("<pad>", "<eos>", "<unk>"))
 
         assert len(self.a3m_data) == len(self.npz_data)
@@ -82,13 +82,15 @@ class TRRosettaContactDataset(CollatableVocabDataset):
 
         desc = self.npz_data.key(index)
         # Subtract two to account for bos and eos
-        fam_toks = torch.zeros(31, tokens.shape[0] - 2, dtype=torch.int64)
         try:
             tgt = self.pfam_df.loc[desc]
-            for seg_idx in range(len(tgt["accession"])):
-                seg_fam, seg_start, seg_end = tgt["accession"][seg_idx], tgt["ali_from"][seg_idx], tgt["ali_to"][seg_idx]
+            num_families = len(tgt["accession"])
+            fam_toks = torch.zeros(num_families, tokens.shape[0] - 2, dtype=torch.int64)
+            # print(desc, "WAS FOUND IN DATAFRAME")
+            # for seg_idx in range(len(tgt["accession"])):
+            for seg_idx, (seg_fam, seg_start, seg_end) in enumerate(zip(tgt["accession"], tgt["ali_from"], tgt["ali_to"])):
                 #account for inclusive 1-indexing of dataframe
-                seg_start -= 1 
+                seg_start -= 1
                 fam_toks[seg_idx, seg_start:seg_end] = self.family_alphabet.get_idx(seg_fam)
         except KeyError:
             pass
@@ -133,21 +135,20 @@ class EncodedFamilyFastaDataset(FastaDataset):
         self.vocab = vocab
         self.pfam_data_file = pfam_data_file
         self.pfam_df = pd.read_parquet(pfam_data_file)
-        self.family_alphabet = esm.Alphabet(np.load(pfam_alphabet_arr, allow_pickle=True), 
+        self.family_alphabet = esm.Alphabet(np.load(pfam_alphabet_arr, allow_pickle=True),
                                             prepend_toks = ("<pad>", "<eos>", "<unk>"))
 
     def __getitem__(self, index: int) -> (torch.Tensor, torch.Tensor):
         desc, seq = super().__getitem__(index)
         tokens = torch.from_numpy(self.vocab.encode_single_sequence(seq))
         # Subtract two to account for bos and eos
-        fam_toks = torch.zeros(1, tokens.shape[0] - 2, dtype=torch.int64)
         try:
             tgt = self.pfam_df.loc[desc]
             num_families = len(tgt["accession"])
             fam_toks = torch.zeros(num_families, tokens.shape[0] - 2, dtype=torch.int64)
             for seg_idx, (seg_fam, seg_start, seg_end) in enumerate(zip(tgt["accession"], tgt["ali_from"], tgt["ali_to"])):
                 #account for inclusive 1-indexing of dataframe
-                seg_start -= 1 
+                seg_start -= 1
                 fam_toks[seg_idx, seg_start:seg_end] = self.family_alphabet.get_idx(seg_fam)
         except KeyError:
             pass
