@@ -96,7 +96,7 @@ cs.store(group="logging", name="default", node=LoggingConfig)
 def train(cfg: Config) -> None:
     alphabet = esm.data.Alphabet.from_architecture("ESM-1b")
     vocab = Vocab.from_esm_alphabet(alphabet)
-    train_data = EncodedFamilyFastaDataset(cfg.data.fasta_path, vocab, "/home/arbaazm/pfam_project/tgt_name_to_coords.parquet", "/home/arbaazm/pfam_project/pfamAlphabet.npy")
+    train_data = EncodedFamilyFastaDataset(cfg.data.fasta_path, vocab, "/data/shared/tgt_name_to_coords.parquet", "/data/shared/pfamAlphabet.npy")
     train_data = RandomCropFamilyDataset(train_data, cfg.model.max_seqlen)
     train_data = MaskedTokenWrapperFamilyDataset(
         train_data,
@@ -121,8 +121,8 @@ def train(cfg: Config) -> None:
     trrosetta_train_data = TRRosettaContactDataset(
         cfg.data.trrosetta_path,
         vocab,
-        pfam_data_file="/home/arbaazm/pfam_project/trrosetta_tgt_name_to_coords.parquet",
-        pfam_alphabet_arr="/home/arbaazm/pfam_project/pfamAlphabet.npy",
+        pfam_data_file="/data/shared/trrosetta_tgt_name_to_coords.parquet",
+        pfam_alphabet_arr="/data/shared/pfamAlphabet.npy",
         split_files=train_pdbs,
         max_seqs_per_msa=1,
     )
@@ -130,8 +130,8 @@ def train(cfg: Config) -> None:
     trrosetta_valid_data = TRRosettaContactDataset(
         cfg.data.trrosetta_path,
         vocab,
-        pfam_data_file="/home/arbaazm/pfam_project/trrosetta_tgt_name_to_coords.parquet",
-        pfam_alphabet_arr="/home/arbaazm/pfam_project/pfamAlphabet.npy",
+        pfam_data_file="/data/shared/trrosetta_tgt_name_to_coords.parquet",
+        pfam_alphabet_arr="/data/shared/pfamAlphabet.npy",
         split_files=valid_pdbs,
         max_seqs_per_msa=1,
     )
@@ -149,13 +149,15 @@ def train(cfg: Config) -> None:
         model_config=cfg.model,
         optimizer_config=cfg.optimizer,
         contact_train_data=trrosetta_train_data,
+        add_pfam_data=True
     )
 
     # Requires wandb to be installed
     logger = (
-        pl.loggers.WandbLogger(project=cfg.logging.wandb_project)
-        if cfg.logging.wandb_project is not None
-        else True
+        pl.loggers.WandbLogger(project="pfamdataIntegration"),
+        pl.loggers.csv_logs.CSVLogger("/home/arbaazm/pfam_project/csv_logs")
+        # if cfg.logging.wandb_project is not None
+        # else True
     )
 
     if isinstance(logger, pl.loggers.LightningLoggerBase):
@@ -177,8 +179,8 @@ def train(cfg: Config) -> None:
 
     trainer = pl.Trainer(
         logger=logger,
-        checkpoint_callback=checkpoint_callback,
-        callbacks=[early_stopping_callback, lr_logger],
+        # checkpoint_callback=checkpoint_callback,
+        callbacks=[checkpoint_callback, early_stopping_callback, lr_logger],
         accumulate_grad_batches=cfg.train.accumulate_grad_batches,
         distributed_backend=cfg.train.distributed_backend,
         fast_dev_run=cfg.fast_dev_run,

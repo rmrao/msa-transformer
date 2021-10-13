@@ -85,14 +85,12 @@ class TRRosettaContactDataset(CollatableVocabDataset):
         fam_toks = torch.zeros(31, tokens.shape[0] - 2, dtype=torch.int64)
         try:
             tgt = self.pfam_df.loc[desc]
-            # print(desc, "WAS FOUND IN DATAFRAME")
             for seg_idx in range(len(tgt["accession"])):
                 seg_fam, seg_start, seg_end = tgt["accession"][seg_idx], tgt["ali_from"][seg_idx], tgt["ali_to"][seg_idx]
                 #account for inclusive 1-indexing of dataframe
                 seg_start -= 1 
                 fam_toks[seg_idx, seg_start:seg_end] = self.family_alphabet.get_idx(seg_fam)
         except KeyError:
-            # print(desc, "NOT FOUND IN DATAFRAME")
             pass
 
         # self.family_vocab.add_special_tokens(fam_toks) analog
@@ -103,7 +101,7 @@ class TRRosettaContactDataset(CollatableVocabDataset):
             np.pad(
             fam_toks,
             pad_widths,
-            constant_values=[(self.family_alphabet.get_idx("<cls>"), self.family_alphabet.get_idx("<eos>"))],
+            constant_values=self.family_alphabet.padding_idx,
         ))
         assert fam_toks.shape[1] == tokens.shape[0]
 
@@ -142,17 +140,16 @@ class EncodedFamilyFastaDataset(FastaDataset):
         desc, seq = super().__getitem__(index)
         tokens = torch.from_numpy(self.vocab.encode_single_sequence(seq))
         # Subtract two to account for bos and eos
-        fam_toks = torch.zeros(136, tokens.shape[0] - 2, dtype=torch.int64)
+        fam_toks = torch.zeros(1, tokens.shape[0] - 2, dtype=torch.int64)
         try:
             tgt = self.pfam_df.loc[desc]
-            # print(desc, "WAS FOUND IN DATAFRAME")
-            for seg_idx in range(len(tgt["accession"])):
-                seg_fam, seg_start, seg_end = tgt["accession"][seg_idx], tgt["ali_from"][seg_idx], tgt["ali_to"][seg_idx]
+            num_families = len(tgt["accession"])
+            fam_toks = torch.zeros(num_families, tokens.shape[0] - 2, dtype=torch.int64)
+            for seg_idx, (seg_fam, seg_start, seg_end) in enumerate(zip(tgt["accession"], tgt["ali_from"], tgt["ali_to"])):
                 #account for inclusive 1-indexing of dataframe
                 seg_start -= 1 
                 fam_toks[seg_idx, seg_start:seg_end] = self.family_alphabet.get_idx(seg_fam)
         except KeyError:
-            # print(desc, "NOT FOUND IN DATAFRAME")
             pass
 
         # self.family_vocab.add_special_tokens(fam_toks) analog
@@ -163,7 +160,7 @@ class EncodedFamilyFastaDataset(FastaDataset):
             np.pad(
             fam_toks,
             pad_widths,
-            constant_values=[(self.family_alphabet.get_idx("<cls>"), self.family_alphabet.get_idx("<eos>"))],
+            constant_values=self.family_alphabet.padding_idx
         ))
         assert fam_toks.shape[1] == tokens.shape[0]
         return tokens, fam_toks
