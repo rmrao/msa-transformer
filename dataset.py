@@ -86,15 +86,11 @@ class TRRosettaContactDataset(CollatableVocabDataset):
             tgt = self.pfam_df.loc[desc]
             num_families = len(tgt["accession"])
             fam_toks = torch.zeros(num_families, tokens.shape[0] - 2, dtype=torch.int64)
-            # print(desc, "WAS FOUND IN DATAFRAME")
-            # for seg_idx in range(len(tgt["accession"])):
             for seg_idx, (seg_fam, seg_start, seg_end) in enumerate(zip(tgt["accession"], tgt["ali_from"], tgt["ali_to"])):
-                # seg_fam, seg_start, seg_end = tgt["accession"][seg_idx], tgt["ali_from"][seg_idx], tgt["ali_to"][seg_idx]
                 #account for inclusive 1-indexing of dataframe
                 seg_start -= 1
                 fam_toks[seg_idx, seg_start:seg_end] = self.family_alphabet.get_idx(seg_fam)
         except KeyError:
-            # print(desc, "NOT FOUND IN DATAFRAME")
             pass
 
         # self.family_vocab.add_special_tokens(fam_toks) analog
@@ -149,13 +145,11 @@ class EncodedFamilyFastaDataset(FastaDataset):
             num_families = len(tgt["accession"])
             fam_toks = torch.zeros(num_families, tokens.shape[0] - 2, dtype=torch.int64)
 
-            # print(desc, "WAS FOUND IN DATAFRAME")
             for seg_idx, (seg_fam, seg_start, seg_end) in enumerate(zip(tgt["accession"], tgt["ali_from"], tgt["ali_to"])):
                 #account for inclusive 1-indexing of dataframe
                 seg_start -= 1
                 fam_toks[seg_idx, seg_start:seg_end] = self.family_alphabet.get_idx(seg_fam)
         except KeyError:
-            # print(desc, "NOT FOUND IN DATAFRAME")
             pass
 
         # self.family_vocab.add_special_tokens(fam_toks) analog

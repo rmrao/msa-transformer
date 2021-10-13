@@ -249,6 +249,7 @@ class ESM1b(BaseProteinModel):
         model_config: TransformerConfig = TransformerConfig(),
         optimizer_config: OptimizerConfig = OptimizerConfig(),
         contact_train_data: Optional[TRRosettaContactDataset] = None,
+        add_pfam_data=False
     ):
         super().__init__(
             vocab=vocab,
@@ -257,9 +258,11 @@ class ESM1b(BaseProteinModel):
         )
         self.model_config = model_config
         self.family_alphabet = family_alphabet
+        self.add_pfam_data = add_pfam_data
 
         self.embed_tokens = self.build_embedding()
-        self.embed_family_tokens = self.build_family_embedding()
+        if self.add_pfam_data:
+            self.embed_family_tokens = self.build_family_embedding()
         self.dropout_layer = nn.Dropout(model_config.layer.dropout)
 
         self.layers = nn.ModuleList([])
@@ -290,9 +293,10 @@ class ESM1b(BaseProteinModel):
         )
 
     def build_family_embedding(self) -> nn.Embedding:
-        return nn.Embedding(
-            len(self.family_alphabet),
-            self.model_config.layer.embed_dim,
+        return nn.EmbeddingBag(
+            num_embeddings=len(self.family_alphabet),
+            embedding_dim=self.model_config.layer.embed_dim,
+            mode='sum',
             padding_idx=0,
         )
 
@@ -344,7 +348,7 @@ class ESM1b(BaseProteinModel):
         return contact_head
 
     def forward(
-        self, tokens, repr_layers=[], need_head_weights=False, return_contacts=False
+        self, tokens, repr_layers=[], need_head_weights=False, return_contacts=False,
     ):
         if not isinstance(tokens, tuple):
             raise RuntimeError("forward argument isn't a tuple")
@@ -355,8 +359,15 @@ class ESM1b(BaseProteinModel):
         tokens, family_tokens = tokens[0], tokens[1]
         assert tokens.ndim == 2
         padding_mask = tokens.eq(self.vocab.pad_idx)  # B, T
-        family_embedding = self.embed_family_tokens(family_tokens)
-        x = self.embed_tokens(tokens) + torch.sum(family_embedding, dim=1)
+
+        if self.add_pfam_data:
+            family_embedding = self.embed_family_tokens(family_tokens.reshape(-1, family_tokens.shape[1])).reshape((tokens.shape[0], tokens.shape[1], self.model_config.layer.embed_dim))
+            embedded_tokens = self.embed_tokens(tokens)
+            print("FAMILY EMBEDDING IS", family_embedding)
+            print("TOKEN EMBEDDING IS", embedded_tokens)
+            x = embedded_tokens + family_embedding
+        else:
+            x = self.embed_tokens(tokens)
 
         x = x + self.embed_positions(tokens)
 
@@ -390,13 +401,8 @@ class ESM1b(BaseProteinModel):
                 hidden_representations[layer_idx + 1] = x.transpose(0, 1)
             if need_head_weights:
                 # (H, B, T, T) => (B, H, T, T)
-<<<<<<< HEAD
-
                 attentions.append(attn.transpose(1, 0))
 
-=======
-                attn_weights.append(attn.transpose(1, 0))
->>>>>>> change family token size from fixed to adaptive
         x = self.emb_layer_norm_after(x)
         x = x.transpose(0, 1)  # (T, B, E) => (B, T, E)
 

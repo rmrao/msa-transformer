@@ -149,13 +149,15 @@ def train(cfg: Config) -> None:
         model_config=cfg.model,
         optimizer_config=cfg.optimizer,
         contact_train_data=trrosetta_train_data,
+        add_pfam_data=True
     )
 
     # Requires wandb to be installed
     logger = (
-        pl.loggers.WandbLogger(project=cfg.logging.wandb_project)
-        if cfg.logging.wandb_project is not None
-        else True
+        pl.loggers.WandbLogger(project="pfamdataIntegration"),
+        pl.loggers.csv_logs.CSVLogger("/home/arbaazm/pfam_project/csv_logs")
+        # if cfg.logging.wandb_project is not None
+        # else True
     )
 
     if isinstance(logger, pl.loggers.LightningLoggerBase):
