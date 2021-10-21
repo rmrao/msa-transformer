@@ -28,25 +28,6 @@ import lr_schedulers
 from dataset import TRRosettaContactDataset
 import esm
 
-
-class Average(pl.metrics.Metric):
-    def __init__(self, dist_sync_on_step=False):
-        super().__init__(dist_sync_on_step=dist_sync_on_step)
-
-        self.add_state(
-            "total", default=torch.tensor(0, dtype=torch.float), dist_reduce_fx="sum"
-        )
-        self.add_state(
-            "samples", default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum"
-        )
-
-    def update(self, values: torch.Tensor):  # type: ignore
-        self.total += values.sum().float()
-        self.samples += values.numel()  # type: ignore
-
-    def compute(self):
-        return self.total / self.samples
-
 @dataclass
 class TransformerLayerConfig:
     embed_dim: int = 768
