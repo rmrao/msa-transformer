@@ -91,7 +91,7 @@ class TRRosettaContactDataset(CollatableVocabDataset):
                 seg_start -= 1
                 fam_toks[seg_idx, seg_start:seg_end] = self.family_alphabet.get_idx(seg_fam)
         except KeyError:
-            pass
+            fam_toks = torch.zeros(31, tokens.shape[0] - 2, dtype=torch.int64)
 
         # self.family_vocab.add_special_tokens(fam_toks) analog
         pad_widths = [(0, 0)] * (fam_toks.ndim - 1) + [
@@ -150,7 +150,7 @@ class EncodedFamilyFastaDataset(FastaDataset):
                 seg_start -= 1
                 fam_toks[seg_idx, seg_start:seg_end] = self.family_alphabet.get_idx(seg_fam)
         except KeyError:
-            pass
+            fam_toks = torch.zeros(31, tokens.shape[0] - 2, dtype=torch.int64)
 
         # self.family_vocab.add_special_tokens(fam_toks) analog
         pad_widths = [(0, 0)] * (fam_toks.ndim - 1) + [

@@ -149,7 +149,7 @@ def train(cfg: Config) -> None:
         model_config=cfg.model,
         optimizer_config=cfg.optimizer,
         contact_train_data=trrosetta_train_data,
-        add_pfam_data=True
+        # add_pfam_data=False
     )
 
     # Requires wandb to be installed

@@ -363,8 +363,6 @@ class ESM1b(BaseProteinModel):
         if self.add_pfam_data:
             family_embedding = self.embed_family_tokens(family_tokens.reshape(-1, family_tokens.shape[1])).reshape((tokens.shape[0], tokens.shape[1], self.model_config.layer.embed_dim))
             embedded_tokens = self.embed_tokens(tokens)
-            print("FAMILY EMBEDDING IS", family_embedding)
-            print("TOKEN EMBEDDING IS", embedded_tokens)
             x = embedded_tokens + family_embedding
         else:
             x = self.embed_tokens(tokens)
