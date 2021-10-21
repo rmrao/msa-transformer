@@ -86,6 +86,7 @@ class TRRosettaContactDataset(CollatableVocabDataset):
             tgt = self.pfam_df.loc[desc]
             num_families = len(tgt["accession"])
             fam_toks = torch.zeros(num_families, tokens.shape[0] - 2, dtype=torch.int64)
+
             for seg_idx, (seg_fam, seg_start, seg_end) in enumerate(zip(tgt["accession"], tgt["ali_from"], tgt["ali_to"])):
                 #account for inclusive 1-indexing of dataframe
                 seg_start -= 1
